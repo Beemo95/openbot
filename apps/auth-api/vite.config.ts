@@ -51,7 +51,13 @@ export default defineConfig(({ command }) => {
       port,
       strictPort: true,
       // `bun run dev:slack` tunnels Slack's install return to this server.
-      allowedHosts: [".openbot.localhost", ".trycloudflare.com"],
+      allowedHosts: [".openbot.localhost", ".trycloudflare.com", ".ifbuyz.com"],
+    },
+    preview: {
+      host: readApiHost(process.env.OPENBOT_API_HOST),
+      port,
+      strictPort: true,
+      allowedHosts: [".ifbuyz.com"],
     },
     plugins: [
       developmentLanGuard(),
@@ -61,7 +67,9 @@ export default defineConfig(({ command }) => {
         config(config) {
           // `vite dev` runs no relay Worker, so local email leaves from the local socket. The plugin
           // merges arrays from the return value, so the binding must leave the config it passes.
-          if (command === "serve") {
+          // `vite build` keeps the relay, and `vite preview` then sends through that binding.
+          // On this machine the relay Worker does not exist, so mail must leave from the local socket.
+          if (command === "serve" || process.env.OPENBOT_SMTP_VIA_NODE === "1") {
             config.services = config.services?.filter((service) => service.binding !== "EMAIL_RELAY");
           }
           return { vars: { ...config.vars, ...localRuntimeVars } };

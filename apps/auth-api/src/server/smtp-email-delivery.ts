@@ -345,10 +345,21 @@ const sendPrivateEmailAttempt = Effect.fn("SmtpEmail.attempt")(function* (
           }),
         );
         if (Result.isFailure(result) && !state.accepted) {
+          const failure = result.failure;
+          if (failure instanceof SmtpReplyError) {
+            console.error(
+              "SMTP reply refused the message:",
+              failure.stage,
+              failure.replyCode,
+              failure.replyText.slice(0, 180),
+            );
+          } else {
+            console.error("SMTP session failed:", failure.message);
+          }
           outcome.error =
-            state.submissionStarted && result.failure.message !== "smtp_message_failed"
+            state.submissionStarted && failure.message !== "smtp_message_failed"
               ? new SmtpError("smtp_delivery_unknown")
-              : result.failure;
+              : failure;
         }
       }),
     // Stop the session before the close, so it cannot write again and `state` is final. A session that
@@ -628,7 +639,55 @@ function encodeBase64(value: string): string {
   return btoa(binary);
 }
 
+function connectWithNodeTls(tls: typeof import("node:tls"), address: { hostname: string; port: number }): SmtpSocket {
+  console.info("SMTP using node tls");
+  const socket = tls.connect({ host: address.hostname, port: address.port, servername: address.hostname });
+  const opened = new Promise((resolve, reject) => {
+    socket.once("secureConnect", () => resolve(undefined));
+    socket.once("error", reject);
+  });
+  const readable = new ReadableStream<Uint8Array>({
+    start(controller) {
+      socket.on("data", (chunk: Buffer | Uint8Array) => {
+        controller.enqueue(chunk instanceof Uint8Array ? chunk : new Uint8Array(chunk));
+      });
+      socket.on("end", () => controller.close());
+      socket.on("error", (error: unknown) => controller.error(error));
+    },
+  });
+  const writable = new WritableStream<Uint8Array>({
+    write(chunk) {
+      return new Promise((resolve, reject) => {
+        socket.write(chunk, (error: unknown) => (error ? reject(error) : resolve()));
+      });
+    },
+    close() {
+      socket.end();
+    },
+  });
+  return {
+    readable,
+    writable,
+    opened,
+    close() {
+      socket.destroy();
+    },
+  };
+}
+
 async function loadCloudflareConnector(): Promise<SmtpConnector> {
+  // Outside Cloudflare, `cloudflare:sockets` cannot complete Oracle SMTP. `node:tls` is present only here.
+  try {
+    const tls = await import("node:tls");
+    if (typeof tls.connect === "function") {
+      console.error("SMTP connector: node tls");
+      return (address) => connectWithNodeTls(tls, address);
+    }
+    console.error("SMTP connector: node tls has no connect");
+  } catch (error) {
+    console.error("SMTP connector: node tls unavailable", error instanceof Error ? error.message : "unknown");
+  }
+  console.error("SMTP connector: cloudflare sockets");
   const { connect } = await import("cloudflare:sockets");
   return connect;
 }

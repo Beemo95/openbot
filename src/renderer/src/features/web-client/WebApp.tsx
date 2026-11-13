@@ -289,6 +289,8 @@ export function WebApp(props: { createRuntime?: WebRuntimeFactory } = {}) {
     });
     const value = await response.json();
     if (!response.ok) {
+      // A browser with no cookie is signed out. That is not a stopped account service.
+      if (path === "session" && response.status === 401) return null;
       if (
         path === "email/start" &&
         isDynamicRecord(value) &&
@@ -368,6 +370,7 @@ export function WebApp(props: { createRuntime?: WebRuntimeFactory } = {}) {
     try {
       const session = await request("session");
       markRemoteSync("session");
+      if (session === null) return;
       const account = await showAccount(accountFrom(session));
       markRemoteSync("workspace-code");
       if (!disposed && generation === sessionGeneration) {

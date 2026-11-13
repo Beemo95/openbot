@@ -1,21 +1,21 @@
 {
   "project_info": {
-    "project_number": "1006722609038",
-    "project_id": "openbot-a3328",
-    "storage_bucket": "openbot-a3328.firebasestorage.app"
+    "project_number": "452352883620",
+    "project_id": "ifbuyz",
+    "storage_bucket": "ifbuyz.firebasestorage.app"
   },
   "client": [
     {
       "client_info": {
-        "mobilesdk_app_id": "1:1006722609038:android:e356f83f470297b6373edf",
+        "mobilesdk_app_id": "1:452352883620:android:5d7074d9cdf76aae789f31",
         "android_client_info": {
-          "package_name": "run.openbot.mobile"
+          "package_name": "kr.mozzink.openbot"
         }
       },
       "oauth_client": [],
       "api_key": [
         {
-          "current_key": "AIzaSyCyTWfak_PrBH6kst-oNmrEDKROGCF6gZw"
+          "current_key": "AIzaSyBE0QGfW9_J6eSIgHO-Df4RGznRXlCPhM0"
         }
       ],
       "services": {

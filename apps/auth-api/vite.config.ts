@@ -40,7 +40,13 @@ export default defineConfig(({ command }) => {
       host: readApiHost(process.env.OPENBOT_API_HOST),
       port,
       strictPort: true,
-      allowedHosts: [".openbot.localhost", ".trycloudflare.com"],
+      allowedHosts: [".openbot.localhost", ".trycloudflare.com", ".ifbuyz.com"],
+    },
+    preview: {
+      host: readApiHost(process.env.OPENBOT_API_HOST),
+      port,
+      strictPort: true,
+      allowedHosts: [".ifbuyz.com"],
     },
     plugins: [
       developmentLanGuard(),
@@ -48,7 +54,11 @@ export default defineConfig(({ command }) => {
       cloudflare({
         viteEnvironment: { name: "ssr" },
         config(config) {
-          if (command === "serve") {
+          // `vite dev` runs no relay Worker, so local email leaves from the local socket. The plugin
+          // merges arrays from the return value, so the binding must leave the config it passes.
+          // `vite build` keeps the relay, and `vite preview` then sends through that binding.
+          // On this machine the relay Worker does not exist, so mail must leave from the local socket.
+          if (command === "serve" || process.env.OPENBOT_SMTP_VIA_NODE === "1") {
             config.services = config.services?.filter((service) => service.binding !== "EMAIL_RELAY");
           }
           return { vars: { ...config.vars, ...localRuntimeVars } };

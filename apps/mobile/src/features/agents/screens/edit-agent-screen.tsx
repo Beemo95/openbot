@@ -24,7 +24,7 @@ import ShieldCheck from "lucide-react-native/icons/shield-check";
 import SlidersHorizontal from "lucide-react-native/icons/sliders-horizontal";
 import Table2 from "lucide-react-native/icons/table-2";
 import Upload from "lucide-react-native/icons/upload";
-import { useCallback, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Alert, Pressable, View } from "react-native";
 import {
   AgentAccessFields,
@@ -190,6 +190,7 @@ function AgentForm({
   const [photo, setPhoto] = useState<AgentPhotoDraft | null | undefined>();
   const [pickingPhoto, setPickingPhoto] = useState(false);
   const [saving, setSaving] = useState(false);
+  const [finished, setFinished] = useState(false);
   const pending = useRef(false);
   const [error, setError] = useState<string | null>(null);
   // The account is not in the agent summary. Only an owner or admin of a host with
@@ -234,7 +235,7 @@ function AgentForm({
 
   // Discard turns prevention off before it repeats the action, so the hook does not warn.
   const [discarding, setDiscarding] = useState(false);
-  usePreventRemove(!discarding && (dirty || saving || pickingPhoto), ({ repeat }) => {
+  usePreventRemove(!discarding && !finished && (dirty || saving || pickingPhoto), ({ repeat }) => {
     if (pending.current || pickingPhoto) return;
     Alert.alert(t("mobile.agent.discard.title"), t("mobile.agent.discard.body"), [
       { text: t("mobile.agent.discard.keepEditing"), style: "cancel" },
@@ -248,6 +249,10 @@ function AgentForm({
       },
     ]);
   });
+
+  useEffect(() => {
+    if (finished) router.back();
+  }, [finished]);
 
   function change(value: AgentEdits) {
     setEdits((current) => ({ ...current, ...value }));
@@ -331,6 +336,7 @@ function AgentForm({
         setPhoto(undefined);
       }
       void haptics.notification("success");
+      setFinished(true);
     } catch (cause) {
       void haptics.notification("error");
       setError(errorMessage(cause, t("mobile.agent.edit.failed")));

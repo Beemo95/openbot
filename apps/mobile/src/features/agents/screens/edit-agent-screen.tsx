@@ -23,7 +23,7 @@ import ShieldCheck from "lucide-react-native/icons/shield-check";
 import SlidersHorizontal from "lucide-react-native/icons/sliders-horizontal";
 import Table2 from "lucide-react-native/icons/table-2";
 import Upload from "lucide-react-native/icons/upload";
-import { useCallback, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Pressable, View } from "react-native";
 import {
   AgentAccessFields,
@@ -192,6 +192,7 @@ function AgentForm({
   const [photo, setPhoto] = useState<AgentPhotoDraft | null | undefined>();
   const [pickingPhoto, setPickingPhoto] = useState(false);
   const [saving, setSaving] = useState(false);
+  const [finished, setFinished] = useState(false);
   const pending = useRef(false);
   const [error, setError] = useState<string | null>(null);
   const { queryKey: accountsKey, accounts: hostAccounts } = useProviderAccounts(agent, available && page === "runtime");
@@ -230,7 +231,11 @@ function AgentForm({
       title.length <= INPUT_LIMITS.agentTitle &&
       !instructionsTooLong(description));
 
-  useDiscardGuard(dirty || saving || pickingPhoto, { busy: () => pending.current || pickingPhoto });
+  useDiscardGuard(!finished && (dirty || saving || pickingPhoto), { busy: () => pending.current || pickingPhoto });
+
+  useEffect(() => {
+    if (finished) router.back();
+  }, [finished]);
 
   function change(value: AgentEdits) {
     setEdits((current) => ({ ...current, ...value }));
@@ -318,6 +323,7 @@ function AgentForm({
         setPhoto(undefined);
       }
       void haptics.notification("success");
+      setFinished(true);
     } catch (cause) {
       void haptics.notification("error");
       setError(errorMessage(cause, t("mobile.agent.edit.failed")));

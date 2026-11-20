@@ -47,7 +47,8 @@
       "SITE_REPORT_HASH_SECRET",
       "REMOTE_TICKET_PRIVATE_JWK",
       "REMOTE_TICKET_PUBLIC_JWKS",
-      "REMOTE_AUTH_WEBHOOK_SECRET"
+      "REMOTE_AUTH_WEBHOOK_SECRET",
+      "FCM_SERVICE_ACCOUNT"
     ]
   },
   "vars": {
@@ -284,7 +285,8 @@
           "SITE_REPORT_HASH_SECRET",
           "REMOTE_TICKET_PRIVATE_JWK",
           "REMOTE_TICKET_PUBLIC_JWKS",
-          "REMOTE_AUTH_WEBHOOK_SECRET"
+          "REMOTE_AUTH_WEBHOOK_SECRET",
+          "FCM_SERVICE_ACCOUNT"
         ]
       },
       "vars": {

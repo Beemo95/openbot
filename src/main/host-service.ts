@@ -4,7 +4,6 @@ import { dirname, join } from "node:path";
 import type { HostKeyHandover } from "@openbot/contracts/host-key-handover";
 import { createInviteUrl, selfHostedApiOrigin } from "@openbot/contracts/invite-links";
 import type {
-  AgentEvent,
   AgentTaskReadState,
   AvatarImageInput,
   BranchAgentTaskInput,
@@ -241,9 +240,7 @@ interface HostServiceOptions {
     request: NotificationRelayRequest,
   ) => Effect.Effect<"sent" | "gone", RemoteWorkflowError>;
   pushNotificationStore?: PushNotificationStore;
-  hostComputerInUse?: (event: AgentEvent | null) => boolean;
   signInWaits?: ConstructorParameters<typeof PushNotificationService>[0]["signInWaits"];
-  awayAfterMs?: number;
   verifyRemoteSessionTicket?: (ticket: string) => Effect.Effect<VerifiedRemoteSessionTicket, RemoteWorkflowError>;
   endRemoteSession?: (sessionId: string) => Effect.Effect<void, RemoteWorkflowError>;
   remoteControlPlaneUrl?: string;
@@ -439,10 +436,6 @@ export class HostService extends EventEmitter<HostEvents> {
               const member = options.store.getMember(memberId);
               return member !== null && !member.disabled;
             },
-            lastUseElsewhere: (memberId, sessionId) => this.#api.lastMemberUseElsewhere(memberId, sessionId),
-            ...(options.awayAfterMs === undefined ? {} : { awayAfterMs: options.awayAfterMs }),
-            atHostComputer: (memberId, event) =>
-              memberId === options.store.getOwnerMemberId() && (options.hostComputerInUse?.(event) ?? false),
             memberLevels: (memberId) => {
               const key = this.#notificationKey(memberId);
               return {

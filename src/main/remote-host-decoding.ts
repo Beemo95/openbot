@@ -9,6 +9,7 @@ export const decodeVoid = emptyDecoder("The remote server returned data.");
 
 export const acceptEmpty = (): undefined => undefined;
 
+/** Whether the member has a phone registered with the host. The wire codec has checked the reply. */
 export const decodeComputerActivityReply = (value: unknown): boolean => isDynamicRecord(value) && value.phones === true;
 
 export function decodeHostReleaseStatusFromHost(value: unknown): HostReleaseStatus {

@@ -48,7 +48,11 @@ import type { TeamApiAgents } from "./team-api/dependencies";
 import { markerExclusionsForCapabilities } from "./team-api/request-helpers";
 
 const ANSWER_PAGE_SIZE = 20;
-export const DESKTOP_USE_MS = 30 * 1000;
+/**
+ * iOS can suspend the app before it says that it goes away, and the host sees the lost connection
+ * about 30 s later, or about 150 s when only Signal reports it. An event in that time is kept this
+ * long, and goes out when the phone turns out to be away and the member has not seen it.
+ */
 const HELD_EVENT_MS = 5 * 60 * 1000;
 const HELD_EVENT_LIMIT = 20;
 const HELD_FLUSH_DELAY_MS = 3_000;
@@ -73,13 +77,20 @@ interface PushNotificationOptions {
   send(request: NotificationRelayRequest): Effect.Effect<"sent" | "gone", PushNotificationSendFailure>;
   hiddenAgentIds(protocol: number, capabilities: ReadonlySet<string>, memberId: string): ReadonlySet<string>;
   memberActive(memberId: string): boolean;
-  lastUseElsewhere(memberId: string, sessionId: string): number | null;
-  awayAfterMs?: number;
+  /**
+   * The levels that the member chose on this server for all of their devices
+   * (`agent-notification-levels-v1`). The server level replaces the level of the phone's registration,
+   * and the level of an agent replaces the server level for the events of that agent.
+   */
   memberLevels?(memberId: string): {
     server: ServerNotificationLevel | null;
     agents: ReadonlyMap<string, ServerNotificationLevel>;
   };
-  atHostComputer(memberId: string, event: AgentEvent | null): boolean;
+  /**
+   * Whether the session's phone shows a Live Activity of this host that shows this event, in place of
+   * a notification. With `alert`, the activity lights up the screen and plays the sound.
+   * `startedAt` is the start of the activity that the phone gives, in milliseconds, or `null`.
+   */
   liveActivityShows(
     sessionId: string,
     subject: PushNotificationSubject,
@@ -118,12 +129,28 @@ interface Registration {
   flushTimer: ReturnType<typeof setTimeout> | null;
 }
 
+/**
+ * Sends a notification to a member's iPhone or Android phone when an agent that the member can see
+ * finishes, fails, cannot start a message, or waits for input, an approval or a browser step, while
+ * the app is not on screen.
+ * It decides as the desktop does (`notificationForAgentEvent`): the member's level, the agent's own
+ * switch, and no notification for a quiet routine run. It sends to an away phone while the member
+ * uses a desktop app too. An iPhone Live Activity replaces a notification only when it shows that
+ * event. The agent name and the text are sealed for the phone, so the account service, Apple and
+ * Google see the token, the time, and sealed bytes only.
+ *
+ * The end of a turn in a side thread notifies too, and the notification names that thread, so a tap
+ * opens it. A routine thread notifies each phone, as a routine run in the agent's chat did. Another
+ * side thread notifies only a phone that can open it (`push-notification-threads-v1`) and that did not
+ * turn these notifications off.
+ *
+ * The phones are kept in a file, so they get notifications after this computer restarts, also when
+ * they do not connect again. The account service sends nothing for a session that has ended.
+ */
 export class PushNotificationService {
   readonly #options: PushNotificationOptions;
   readonly #now: () => number;
   readonly #registrations = new Map<string, Registration>();
-  readonly #computerInput = new Map<string, { memberId: string; at: number }>();
-  readonly #awayAfterMs: number;
   readonly #listener = (event: AgentEvent) => {
     this.#releaseAnswered(event);
     Effect.runFork(this.#deliver(event).pipe(Effect.forkIn(this.#scope, { startImmediately: true })));
@@ -140,28 +167,14 @@ export class PushNotificationService {
   constructor(options: PushNotificationOptions) {
     this.#options = options;
     this.#now = options.now ?? Date.now;
-    this.#awayAfterMs = options.awayAfterMs ?? DESKTOP_USE_MS;
   }
 
-  computerInput(sessionId: string, memberId: string, idleSeconds: number): boolean {
-    const now = this.#now();
-    for (const [other, input] of this.#computerInput) {
-      if (now - input.at >= this.#awayAfterMs) this.#computerInput.delete(other);
-    }
-    const at = now - idleSeconds * 1_000;
-    if (now - at < this.#awayAfterMs) this.#computerInput.set(sessionId, { memberId, at });
-    else this.#computerInput.delete(sessionId);
+  /** The legacy computer-activity route asks whether this member has a registered phone. */
+  hasRegisteredPhone(memberId: string): boolean {
     return [...this.#registrations.values()].some((registration) => registration.stored.memberId === memberId);
   }
 
-  #lastUseElsewhere(memberId: string, sessionId: string): number | null {
-    let last = this.#options.lastUseElsewhere(memberId, sessionId);
-    for (const [other, input] of this.#computerInput) {
-      if (other !== sessionId && input.memberId === memberId && (last === null || input.at > last)) last = input.at;
-    }
-    return last;
-  }
-
+  /** Reads the saved phones when the host starts. They count as away until they connect again. */
   start(): void {
     this.#running = true;
     for (const stored of this.#options.store.list()) {
@@ -214,7 +227,6 @@ export class PushNotificationService {
   }
 
   remove(sessionId: string): void {
-    this.#computerInput.delete(sessionId);
     const registration = this.#registrations.get(sessionId);
     if (!this.#running || !registration) return;
     this.#dropHeld(registration);
@@ -231,7 +243,6 @@ export class PushNotificationService {
     this.#listening = false;
     for (const registration of this.#registrations.values()) this.#dropHeld(registration);
     this.#registrations.clear();
-    this.#computerInput.clear();
     yield* Fiber.awaitAll([...this.#saves]);
     yield* Scope.close(this.#scope, Exit.void);
     this.#scope = Scope.makeUnsafe();
@@ -264,7 +275,6 @@ export class PushNotificationService {
     const subject = eventSubject(event, thread !== null);
     if (!subject) return;
     const now = this.#now();
-    const desktopNotifies = !thread || thread.routine;
     const targets = (only ? [only] : [...this.#registrations.values()]).filter((registration) => {
       if (
         thread &&
@@ -273,12 +283,7 @@ export class PushNotificationService {
           registration.stored.threadReplies === false)
       )
         return false;
-      return this.#reaches(registration, received, subject.agentId, {
-        desktopNotifies,
-        hostEvent: desktopNotifies ? event : received,
-        now,
-        only,
-      });
+      return this.#reaches(registration, received, subject.agentId, { now, only });
     });
     if (!targets.length) return;
     const agents = this.#options.agents.listAgents();
@@ -343,7 +348,7 @@ export class PushNotificationService {
   ) {
     const now = this.#now();
     const targets = (only ? [only] : [...this.#registrations.values()]).filter((registration) =>
-      this.#reaches(registration, notice, notice.agentId, { desktopNotifies: false, hostEvent: null, now, only }),
+      this.#reaches(registration, notice, notice.agentId, { now, only }),
     );
     if (!targets.length) return;
     const agents = this.#options.agents.listAgents();
@@ -380,7 +385,7 @@ export class PushNotificationService {
     registration: Registration,
     received: PushNotice,
     agentId: string,
-    delivery: { desktopNotifies: boolean; hostEvent: AgentEvent | null; now: number; only: Registration | undefined },
+    delivery: { now: number; only: Registration | undefined },
   ): boolean {
     const { value, memberId, protocol, sessionId } = registration.stored;
     const { now } = delivery;
@@ -394,13 +399,7 @@ export class PushNotificationService {
       return false;
     }
     if (this.#options.hiddenAgentIds(protocol, registration.capabilities, memberId).has(agentId)) return false;
-    const used = delivery.desktopNotifies
-      ? this.#lastUseElsewhere(memberId, sessionId)
-      : this.#options.lastUseElsewhere(memberId, sessionId);
-    return !(
-      (used !== null && now - used < this.#awayAfterMs) ||
-      this.#options.atHostComputer(memberId, delivery.hostEvent)
-    );
+    return true;
   }
 
   #answer = Effect.fn("PushNotifications.answer")(function* (

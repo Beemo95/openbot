@@ -877,25 +877,17 @@ does not count it. See [hosted servers](../hosted-servers.md) step 5.
 
 ### Computer activity
 
-`computer-activity-v1` adds `POST /v1/client/activity` with `{ idleSeconds }`, the whole seconds since
-the last keyboard or mouse input on the computer of a desktop app, in any app. The host answers
-`{ phones }`: whether it sends notifications to a phone of the calling member. A host advertises it
-when it sends phone notifications (`pushNotifications` in `TeamApiOptions`), and the capability is v9
-only. `PushNotificationService.computerInput` keeps the input time of each session in memory and
-uses it for the away time only. It removes an old time at the next report and at the end of the
-session. A phone of the same member stays quiet until that time passes, as after a send
-from another session. The route is in `PASSIVE_ROUTES`: input on a computer does not keep a hosted
-server running.
+`computer-activity-v1` is a protocol v9 compatibility route. It accepts the legacy
+`POST /v1/client/activity` body `{ idleSeconds }` and answers `{ phones }`, where `phones` says whether
+the calling member has a phone registered with this host. The host ignores `idleSeconds` when it
+decides whether to send notifications. The route stays in `PASSIVE_ROUTES`, so a legacy report does
+not keep a hosted server running. New desktop clients do not send these reports; the web client never
+sent them.
 
-The desktop main process sends it through `ComputerActivityReport`, owned by `RemoteServerManager`. It
-reads `powerMonitor.getSystemIdleTime` each sixth of the away time (at most 5 seconds, at least 1) and
-tells each joined server that is online, advertises the capability, and whose events the desktop shows
-now: a focused main or chat window, or desktop notifications on with the server not muted and its level
-not "Nothing". It sends only when there was input after its last send, so the last send after the
-member leaves gives the time of the last input. A host that answers `phones: false` is not told again
-for 5 minutes, so a host without a phone of the member does not learn when the member is at the
-computer. The web client cannot read the idle time of the computer and does not send it. The owner of
-the host computer needs no report: the host reads `powerMonitor` itself (`hostComputerInUse`).
+The host still advertises the capability when it sends phone notifications
+(`pushNotifications` in `TeamApiOptions`) so older clients can use the response and keep their old
+behavior. A host sends an eligible notification to an away phone even while the member uses the
+desktop app. No desktop input or focus time is recorded for phone delivery.
 
 ### Library folder events
 

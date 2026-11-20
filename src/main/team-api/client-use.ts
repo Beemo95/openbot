@@ -198,6 +198,7 @@ const PASSIVE_ROUTES: ReadonlySet<string> = new Set([
   PROVIDERS_RUNTIMES_V2_ROUTES.runtimesStatus,
   USAGE_CREDITS_ROUTES.list,
   FOCUS_USE_ROUTES.ping,
+  // Legacy desktop input reports stay passive and do not keep a hosted server running.
   COMPUTER_ACTIVITY_ROUTES.report,
 ]);
 

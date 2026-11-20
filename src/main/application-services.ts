@@ -55,7 +55,6 @@ import {
   clipboard,
   desktopCapturer,
   Menu,
-  Notification,
   nativeImage,
   net,
   powerMonitor,
@@ -196,7 +195,6 @@ import {
   claudeUserSetupControl,
   createClaudeUserSetupPreferenceStore,
 } from "./claude-user-setup-preference-store";
-import { createComputerIdle } from "./computer-idle";
 import { ComputerUseHighlightController } from "./computer-use-highlight-window";
 import { applicationBundlePath, applicationIconName } from "./computer-use-permission-app";
 import { ComputerUsePermissionHelpWindowController } from "./computer-use-permission-help-window";
@@ -221,7 +219,6 @@ import { CUSTOM_AGENTS_FILE, CustomAgentStore } from "./custom-agent-store";
 import { type CustomProviderChanges, createCustomProviderChanges } from "./custom-provider-changes";
 import { CustomProviderStore } from "./custom-provider-store";
 import { MCP_OAUTH_REDIRECT_URL } from "./deep-link-router";
-import { desktopShowsAgentEvent } from "./desktop-notifications";
 import { shouldAutoStartHost } from "./development-profile";
 import {
   applyDevelopmentRemoteAccount,
@@ -370,7 +367,6 @@ import { toProviderRuntimeFailure } from "./provider-runtime-effects";
 import { ProviderRuntimeManager, providerRuntimeRoot, runtimeTarget } from "./provider-runtime-manager";
 import { ProviderUseSettingsStore } from "./provider-use-settings-store";
 import { PushNotificationStore } from "./push-notification-store";
-import { DESKTOP_USE_MS } from "./push-notifications";
 import { ReferralDesktopService } from "./referral-service";
 import { RelayedMessagingInstalls } from "./relayed-messaging-installs";
 import { decodeQueuedMessageReceipt } from "./remote-agent-decoding";
@@ -2990,13 +2986,7 @@ export async function createApplicationServices({
         ? Effect.succeed(localServersForTeam)
         : Effect.fail(new RemoteWorkflowError({ cause: new Error(sourceText("error.team.localServersUnsupported")) })),
     );
-  const awaySeconds = app.isPackaged ? Number.NaN : Number(process.env.OPENBOT_DEV_AWAY_SECONDS);
-  const awayAfterMs = Number.isInteger(awaySeconds) && awaySeconds > 0 ? awaySeconds * 1_000 : DESKTOP_USE_MS;
-  const computerIdle = createComputerIdle(
-    (contents) =>
-      windows.getMainWindow()?.webContents === contents ||
-      windows.getChatWindows().some((chat) => chat.webContents === contents),
-  );
+  // A server on this computer has no account session: the desktop app reads its directory for it.
   const localServerMembers = new LocalServerMembers(() => process.stdout.write(formatLocalServerMembersRequest()));
   const mcpAccess: McpAccessControl = {
     revision: () => mcpAccessStore.revision(),
@@ -3209,22 +3199,6 @@ export async function createApplicationServices({
     sendLiveActivityPush: (hostId, push) => centralAuth.sendLiveActivityPush(hostId, push).pipe(toRemoteWorkflowError),
     sendPushNotification: (hostId, push) => centralAuth.sendPushNotification(hostId, push).pipe(toRemoteWorkflowError),
     pushNotificationStore,
-    awayAfterMs,
-    hostComputerInUse: (event) => {
-      const window = windows.getMainWindow();
-      if (!window || window.isDestroyed()) return false;
-      if (powerMonitor.getSystemIdleState(awayAfterMs / 1_000) !== "active") return false;
-      if (computerIdle.seconds() * 1_000 >= awayAfterMs) return false;
-      if (window.isFocused()) return true;
-      if (!Notification.isSupported()) return false;
-      const local = remoteServers.list().find((server) => server.id === LOCAL_SERVER_ID);
-      return desktopShowsAgentEvent(
-        event,
-        local,
-        notificationPreference.get().desktopNotifications,
-        agentNotificationLevels.levels(OWNER_NOTIFICATION_KEY),
-      );
-    },
     verifyRemoteSessionTicket: (ticket) => centralAuth.verifyRemoteSessionTicket(ticket).pipe(toRemoteWorkflowError),
     endRemoteSession: (sessionId) => centralAuth.endRemoteSession(sessionId).pipe(toRemoteWorkflowError),
     remoteControlPlaneUrl: centralAuth.resolveApiUrl("/"),
@@ -3494,25 +3468,6 @@ export async function createApplicationServices({
           }),
       },
       accountReady: centralAuthInitialization,
-      ...(hostedServer || serverModeEnvironment || localServerChild
-        ? {}
-        : {
-            computerActivity: {
-              awayAfterMs,
-              idleSeconds: () => computerIdle.seconds(),
-              showsEvents: (server) => {
-                const window = windows.getMainWindow();
-                if (!window || window.isDestroyed()) return false;
-                if (window.isFocused() || windows.getChatWindows().some((chat) => chat.isFocused())) return true;
-                return (
-                  Notification.isSupported() &&
-                  notificationPreference.get().desktopNotifications &&
-                  !server.notificationsMuted &&
-                  server.notificationLevel !== "nothing"
-                );
-              },
-            },
-          }),
       getLocalHostId: () => teamStore.getIdentity()?.serverId ?? null,
       hostedServers: {
         unavailable: (serverId, wake) => hostedServers.unavailableHost(serverId, wake),

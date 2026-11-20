@@ -139,8 +139,6 @@ const phones = new PushNotificationService({
     }),
   hiddenAgentIds: () => new Set(),
   memberActive: (memberId) => memberId === MEMBER,
-  lastUseElsewhere: () => null,
-  atHostComputer: () => false,
   liveActivityShows: (sessionId, subject, alert, startedAt) =>
     liveActivity.showsEvent(sessionId, subject, alert, startedAt),
   randomBytes: (size) => new Uint8Array(randomBytes(size)),

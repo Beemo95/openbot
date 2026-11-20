@@ -40,13 +40,13 @@ export default defineConfig(({ command }) => {
       host: readApiHost(process.env.OPENBOT_API_HOST),
       port,
       strictPort: true,
-      allowedHosts: [".openbot.localhost", ".trycloudflare.com", ".ifbuyz.com"],
+      allowedHosts: [".openbot.localhost", ".trycloudflare.com", ".ifbuyz.com", "dydxo116.duckdns.org"],
     },
     preview: {
       host: readApiHost(process.env.OPENBOT_API_HOST),
       port,
       strictPort: true,
-      allowedHosts: [".ifbuyz.com"],
+      allowedHosts: [".ifbuyz.com", "dydxo116.duckdns.org"],
     },
     plugins: [
       developmentLanGuard(),

@@ -51,13 +51,13 @@ export default defineConfig(({ command }) => {
       port,
       strictPort: true,
       // `bun run dev:slack` tunnels Slack's install return to this server.
-      allowedHosts: [".openbot.localhost", ".trycloudflare.com", ".ifbuyz.com"],
+      allowedHosts: [".openbot.localhost", ".trycloudflare.com", ".ifbuyz.com", "dydxo116.duckdns.org"],
     },
     preview: {
       host: readApiHost(process.env.OPENBOT_API_HOST),
       port,
       strictPort: true,
-      allowedHosts: [".ifbuyz.com"],
+      allowedHosts: [".ifbuyz.com", "dydxo116.duckdns.org"],
     },
     plugins: [
       developmentLanGuard(),

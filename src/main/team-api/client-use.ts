@@ -193,7 +193,7 @@ const PASSIVE_ROUTES: ReadonlySet<string> = new Set([
   USAGE_CREDITS_ROUTES.list,
   // A focused app counts as use only for a limited time: `TeamApiServer` records it on its own.
   FOCUS_USE_ROUTES.ping,
-  // Input on the computer of a desktop app keeps the member's phones quiet, not a hosted server running.
+  // Legacy desktop input reports stay passive and do not keep a hosted server running.
   COMPUTER_ACTIVITY_ROUTES.report,
 ]);
 

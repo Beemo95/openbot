@@ -283,7 +283,7 @@ if (serverMode || hostedServer || localServerChild) hideExceptionErrorBox();
 // an MCP sign-in showed it as an empty window next to the desktop app.
 if (serverMode || hostedServer || localServerChild) keepWindowsHidden();
 // A local server has no window, so it has no Dock tile either.
-if (localServerChild && process.platform === "darwin") app.dock?.hide();
+if ((localServerChild || serverMode) && process.platform === "darwin") app.dock?.hide();
 const inviteLinkOptions = {
   allowLocalDevelopmentApiUrl: developmentRemoteRole !== null,
   selfHostedApiOrigin: selfHostedApiOrigin(process.env.OPENBOT_AUTH_API_URL),
@@ -1538,7 +1538,7 @@ if (!hasSingleInstanceLock) {
         app.quit();
         return;
       }
-      if (!localServerChild) await presentApplication();
+      if (!localServerChild && !serverMode) await presentApplication();
       const recovery = await recoverFromStartLoop();
       if (recovery === "quit") {
         quitFor("quit");

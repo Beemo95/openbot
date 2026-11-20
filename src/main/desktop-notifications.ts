@@ -10,21 +10,6 @@ import type { Notification } from "electron";
 import type { NotificationPreferenceStore } from "./notification-preference-store";
 
 /**
- * Whether the desktop notifies about a server's event while its window does not have focus. The
- * owner's phone stays quiet only for an event that this returns true for, so each event reaches one
- * device. The level that the user chose for the agent replaces the server level. The agent switch
- * that applies to every member applies after this, on both.
- */
-export function desktopShowsAgentEvent(
-  event: AgentEvent,
-  server: Pick<ServerSummary, "notificationsMuted" | "notificationLevel"> | undefined,
-  enabled: boolean,
-  agentLevels: ReadonlyMap<string, ServerNotificationLevel> | null = null,
-): boolean {
-  return desktopAgentEventLevel(event, server, enabled, agentLevels) !== null;
-}
-
-/**
  * The level that the desktop notifies a server's event at, or null when it stays quiet: the level that
  * the user chose for the agent, or else the server level. A usage limit is about the account, so the
  * level of an agent does not silence it. A failed subagent notifies at "all", as a failed turn does.

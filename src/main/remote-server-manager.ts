@@ -87,10 +87,6 @@ import {
   CHANNEL_PICTURE_ROUTES,
 } from "@openbot/contracts/team-protocol/channel-picture-v1";
 import { CHAT_COLORS_CAPABILITY, CHAT_COLORS_ROUTES } from "@openbot/contracts/team-protocol/chat-colors-v1";
-import {
-  COMPUTER_ACTIVITY_CAPABILITY,
-  COMPUTER_ACTIVITY_ROUTES,
-} from "@openbot/contracts/team-protocol/computer-activity-v1";
 import { TEAM_MEMBER_LEAVE_CAPABILITY, type TeamCurrentCapability } from "@openbot/contracts/team-protocol/current";
 import { FOCUS_USE_CAPABILITY, FOCUS_USE_ROUTES } from "@openbot/contracts/team-protocol/focus-use-v1";
 import type { HostAppearanceEvent, ServerAppearance } from "@openbot/contracts/team-protocol/host-appearance-v1";
@@ -121,7 +117,6 @@ import {
 } from "@openbot/team-client/hosted-server-wake";
 import { Deferred, Effect, Exit, Layer, Result, Scope, Semaphore } from "effect";
 import type { CentralAuthOperationError } from "./central-auth-effects";
-import { ComputerActivityReport } from "./computer-activity-report";
 import { contentDispositionFileName } from "./content-disposition";
 import type { HostedServerDesktopService } from "./hosted-server-service";
 import type { PreferenceFileFailure } from "./preference-file";
@@ -149,7 +144,7 @@ import {
 } from "./remote-conversation-decoding";
 import { decodeRemoteDesktopSetupFromHost, decodeRemoteDesktopTestFromHost } from "./remote-desktop-setup-decoding";
 import { decodeRemoteDesktopSession } from "./remote-device-decoding";
-import { acceptEmpty, decodeComputerActivityReply, decodeVoid, type ResponseDecoder } from "./remote-host-decoding";
+import { acceptEmpty, decodeVoid, type ResponseDecoder } from "./remote-host-decoding";
 import { type RemotePicture, RemotePictureCache } from "./remote-picture-cache";
 import { type RemoteRequestInit, RemoteServerClient } from "./remote-server-client";
 import { RemoteServerConnections } from "./remote-server-connections";
@@ -244,17 +239,6 @@ interface RemoteServerManagerOptions {
   accountReady?: Effect.Effect<unknown, RemoteWorkflowError>;
   /** The notification levels that the owner of this computer chose on its own server. */
   localNotificationLevels?: LocalNotificationLevels;
-  /** Tells each joined host when this computer had input (`computer-activity-v1`). */
-  computerActivity?: ComputerActivityOptions;
-}
-
-interface ComputerActivityOptions {
-  /** The time without input after which a host lets the member's phone notify. */
-  awayAfterMs: number;
-  /** Whole seconds since the last keyboard or mouse input on this computer. */
-  idleSeconds(): number;
-  /** Whether this desktop shows the events of the server now, in a focused window or as notifications. */
-  showsEvents(server: ServerSummary): boolean;
 }
 
 /** The levels of the owner on the server of this computer, which the host also reads for the owner's phones. */
@@ -369,7 +353,6 @@ export class RemoteServerManager extends EventEmitter<RemoteServerEvents> {
   readonly #focusUse = createFocusUsePing((serverId) =>
     this.#background(this.request(serverId, FOCUS_USE_ROUTES.ping, acceptEmpty, { method: "POST", body: {} })),
   );
-  readonly #computerActivity: ComputerActivityReport | null;
   readonly #remoteViewerProxy: RemoteViewerProxy | null;
   #selections = Semaphore.makeUnsafe(1);
   /** One read of the account's host list at a time, so an older answer cannot replace a newer one. */
@@ -409,30 +392,6 @@ export class RemoteServerManager extends EventEmitter<RemoteServerEvents> {
     this.#connectTrace = options.connectTrace ?? null;
     this.#accountReady = options.accountReady ?? Effect.void;
     this.#localLevels = options.localNotificationLevels ?? null;
-    const activity = options.computerActivity;
-    this.#computerActivity = activity
-      ? new ComputerActivityReport({
-          awayAfterMs: activity.awayAfterMs,
-          idleSeconds: () => activity.idleSeconds(),
-          // A server whose events this desktop does not show tells the member's phone.
-          targets: () =>
-            this.list()
-              .filter(
-                (server) =>
-                  server.id !== LOCAL_SERVER_ID &&
-                  this.#connections.stateFor(server.id) === "online" &&
-                  this.supportsCapability(server.id, COMPUTER_ACTIVITY_CAPABILITY) &&
-                  activity.showsEvents(server),
-              )
-              .map((server) => server.id),
-          send: (serverId, idleSeconds) =>
-            this.request(serverId, COMPUTER_ACTIVITY_ROUTES.report, decodeComputerActivityReply, {
-              method: "POST",
-              body: { idleSeconds },
-            }),
-          run: (operation) => this.#background(operation),
-        })
-      : null;
     // A change from the owner's phone shows at once in the server list and in Settings › Notifications.
     this.#localLevels?.subscribe(() => {
       this.#emitChanged();
@@ -998,7 +957,6 @@ export class RemoteServerManager extends EventEmitter<RemoteServerEvents> {
   readonly startEventConnections = Effect.fn("RemoteManager.startEventConnections")(function* (
     this: RemoteServerManager,
   ) {
-    this.#computerActivity?.start();
     yield* this.#events.start();
   }).bind(this);
 
@@ -2817,7 +2775,6 @@ export class RemoteServerManager extends EventEmitter<RemoteServerEvents> {
     return yield* Effect.gen({ self: this }, function* () {
       for (const serverId of [...this.#hostedStartAt.keys()]) this.#clearHostedStart(serverId);
       this.#focusUse.dispose();
-      this.#computerActivity?.dispose();
       yield* this.#events.stop();
       this.#refresh.clear();
       this.#client.clear();

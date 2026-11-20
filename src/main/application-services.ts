@@ -58,7 +58,6 @@ import { LocalSkillLibrary } from "./local-skill-library";
 import { localSkillTools } from "./local-skill-tools";
 import { MAC_PERMISSION_URLS } from "./mac-permission-urls";
 import { PushNotificationStore } from "./push-notification-store";
-import { DESKTOP_USE_MS } from "./push-notifications";
 import { RemoteWorkflowError, toRemoteWorkflowError } from "./remote-service-effects";
 /**
  * The composition root. Every long-lived service the desktop app owns is built here, in one
@@ -130,10 +129,8 @@ import {
   clipboard,
   desktopCapturer,
   Menu,
-  Notification,
   nativeImage,
   net,
-  powerMonitor,
   screen,
   shell,
   systemPreferences,
@@ -223,7 +220,6 @@ import {
   claudeUserSetupControl,
   createClaudeUserSetupPreferenceStore,
 } from "./claude-user-setup-preference-store";
-import { createComputerIdle } from "./computer-idle";
 import { ComputerUseHighlightController } from "./computer-use-highlight-window";
 import { applicationBundlePath, applicationIconName } from "./computer-use-permission-app";
 import { ComputerUsePermissionHelpWindowController } from "./computer-use-permission-help-window";
@@ -247,7 +243,6 @@ import { CUSTOM_AGENTS_FILE, CustomAgentStore } from "./custom-agent-store";
 import { type CustomProviderChanges, createCustomProviderChanges } from "./custom-provider-changes";
 import { CustomProviderStore } from "./custom-provider-store";
 import { MCP_OAUTH_REDIRECT_URL } from "./deep-link-router";
-import { desktopShowsAgentEvent } from "./desktop-notifications";
 import { shouldAutoStartHost } from "./development-profile";
 import {
   applyDevelopmentRemoteAccount,
@@ -3437,14 +3432,6 @@ export async function createApplicationServices({
         ? Effect.succeed(localServersForTeam)
         : Effect.fail(new RemoteWorkflowError({ cause: new Error(sourceText("error.team.localServersUnsupported")) })),
     );
-  // Development only: a shorter or longer time without input before a phone notifies, to test it.
-  const awaySeconds = app.isPackaged ? Number.NaN : Number(process.env.OPENBOT_DEV_AWAY_SECONDS);
-  const awayAfterMs = Number.isInteger(awaySeconds) && awaySeconds > 0 ? awaySeconds * 1_000 : DESKTOP_USE_MS;
-  const computerIdle = createComputerIdle(
-    (contents) =>
-      windows.getMainWindow()?.webContents === contents ||
-      windows.getChatWindows().some((chat) => chat.webContents === contents),
-  );
   // A server on this computer has no account session: the desktop app reads its directory for it.
   const localServerMembers = new LocalServerMembers(() => process.stdout.write(formatLocalServerMembersRequest()));
   // A set that changes which agents get the server gives each agent a new provider session, as a saved
@@ -3715,28 +3702,6 @@ export async function createApplicationServices({
     sendLiveActivityPush: (hostId, push) => centralAuth.sendLiveActivityPush(hostId, push).pipe(toRemoteWorkflowError),
     sendPushNotification: (hostId, push) => centralAuth.sendPushNotification(hostId, push).pipe(toRemoteWorkflowError),
     pushNotificationStore,
-    awayAfterMs,
-    // The owner is at this computer only with recent input, also when the window was left in focus.
-    // Then the focused window shows the event, or the desktop notifies. When mute or the level of
-    // this server keeps the desktop quiet about the event, the phone tells the owner.
-    hostComputerInUse: (event) => {
-      const window = windows.getMainWindow();
-      if (!window || window.isDestroyed()) return false;
-      // Also a locked screen. In a Wayland session, `computerIdle` counts the input in OpenBot only.
-      if (powerMonitor.getSystemIdleState(awayAfterMs / 1_000) !== "active") return false;
-      if (computerIdle.seconds() * 1_000 >= awayAfterMs) return false;
-      if (window.isFocused()) return true;
-      // Without a notification service, as on Linux without a daemon, the desktop shows nothing.
-      if (!Notification.isSupported()) return false;
-      // Read when an event arrives, after the manager below exists.
-      const local = remoteServers.list().find((server) => server.id === LOCAL_SERVER_ID);
-      return desktopShowsAgentEvent(
-        event,
-        local,
-        notificationPreference.get().desktopNotifications,
-        agentNotificationLevels.levels(OWNER_NOTIFICATION_KEY),
-      );
-    },
     verifyRemoteSessionTicket: (ticket) => centralAuth.verifyRemoteSessionTicket(ticket).pipe(toRemoteWorkflowError),
     endRemoteSession: (sessionId) => centralAuth.endRemoteSession(sessionId).pipe(toRemoteWorkflowError),
     remoteControlPlaneUrl: centralAuth.resolveApiUrl("/"),
@@ -4037,27 +4002,6 @@ export async function createApplicationServices({
           }),
       },
       accountReady: centralAuthInitialization,
-      // A joined host keeps the member's phones quiet while this computer has input and this desktop
-      // shows the events of that host: in a focused window, or as notifications.
-      ...(hostedServer || serverModeEnvironment || localServerChild
-        ? {}
-        : {
-            computerActivity: {
-              awayAfterMs,
-              idleSeconds: () => computerIdle.seconds(),
-              showsEvents: (server) => {
-                const window = windows.getMainWindow();
-                if (!window || window.isDestroyed()) return false;
-                if (window.isFocused() || windows.getChatWindows().some((chat) => chat.isFocused())) return true;
-                return (
-                  Notification.isSupported() &&
-                  notificationPreference.get().desktopNotifications &&
-                  !server.notificationsMuted &&
-                  server.notificationLevel !== "nothing"
-                );
-              },
-            },
-          }),
       getLocalHostId: () => teamStore.getIdentity()?.serverId ?? null,
       hostedServers: {
         unavailable: (serverId, wake) => hostedServers.unavailableHost(serverId, wake),

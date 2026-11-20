@@ -47,14 +47,6 @@ import { markerExclusionsForCapabilities } from "./team-api/request-helpers";
 /** The answer of a turn is among the last messages of the conversation. */
 const ANSWER_PAGE_SIZE = 20;
 /**
- * A member who did something in a desktop or web app this recently, or who used the computer of a
- * desktop app (`computer-activity-v1`), is at that app, which shows the event itself, so the phone
- * stays quiet. This includes the events that wait for the member: the desktop app asks for them. The
- * computer of this host counts the same idle time. It is short: a task can end at any time after the
- * member leaves the computer. An unpackaged app can set another time (`OPENBOT_DEV_AWAY_SECONDS`).
- */
-export const DESKTOP_USE_MS = 30 * 1000;
-/**
  * iOS can suspend the app before it says that it goes away, and the host sees the lost connection
  * about 30 s later, or about 150 s when only Signal reports it. An event in that time is kept this
  * long, and goes out when the phone turns out to be away and the member has not seen it.
@@ -90,10 +82,6 @@ interface PushNotificationOptions {
   hiddenAgentIds(protocol: number, capabilities: ReadonlySet<string>, memberId: string): ReadonlySet<string>;
   /** Whether the member is still a member and not disabled. A removed member gets no more notifications. */
   memberActive(memberId: string): boolean;
-  /** The last send, answer or typing of the member in a session other than this phone, or `null`. */
-  lastUseElsewhere(memberId: string, sessionId: string): number | null;
-  /** How long after the last use of the member elsewhere the phone notifies. `DESKTOP_USE_MS` when not set. */
-  awayAfterMs?: number;
   /**
    * The levels that the member chose on this server for all of their devices
    * (`agent-notification-levels-v1`). The server level replaces the level of the phone's registration,
@@ -103,12 +91,6 @@ interface PushNotificationOptions {
     server: ServerNotificationLevel | null;
     agents: ReadonlyMap<string, ServerNotificationLevel>;
   };
-  /**
-   * Whether the member is at the computer of this host, where the desktop app shows the event. For a
-   * side thread turn that is not a routine's, `event` is the `thread-turn-completed` event, as the
-   * desktop gets it.
-   */
-  atHostComputer(memberId: string, event: AgentEvent): boolean;
   /**
    * Whether the session's phone shows a Live Activity of this host that shows this event, in place of
    * a notification. With `alert`, the activity lights up the screen and plays the sound.
@@ -166,9 +148,9 @@ interface Registration {
  * finishes, fails, cannot start a message, or waits for input, an approval or a browser step, while
  * the app is not on screen.
  * It decides as the desktop does (`notificationForAgentEvent`): the member's level, the agent's own
- * switch, and no notification for a quiet routine run. It sends nothing while the member uses a
- * desktop app or the computer that it runs on, and no answer to a message while an iPhone shows the Live Activity, which shows the
- * answer. The agent name and the text are sealed for the phone, so the account service, Apple and
+ * switch, and no notification for a quiet routine run. It sends to an away phone while the member
+ * uses a desktop app too. An iPhone Live Activity replaces a notification only when it shows that
+ * event. The agent name and the text are sealed for the phone, so the account service, Apple and
  * Google see the token, the time, and sealed bytes only.
  *
  * The end of a turn in a side thread notifies too, and the notification names that thread, so a tap
@@ -183,9 +165,6 @@ export class PushNotificationService {
   readonly #options: PushNotificationOptions;
   readonly #now: () => number;
   readonly #registrations = new Map<string, Registration>();
-  /** The last input on the computer of each desktop session (`computer-activity-v1`). Older entries go. */
-  readonly #computerInput = new Map<string, { memberId: string; at: number }>();
-  readonly #awayAfterMs: number;
   readonly #listener = (event: AgentEvent) => {
     this.#releaseAnswered(event);
     Effect.runFork(this.#deliver(event).pipe(Effect.forkIn(this.#scope, { startImmediately: true })));
@@ -200,31 +179,11 @@ export class PushNotificationService {
   constructor(options: PushNotificationOptions) {
     this.#options = options;
     this.#now = options.now ?? Date.now;
-    this.#awayAfterMs = options.awayAfterMs ?? DESKTOP_USE_MS;
   }
 
-  /**
-   * The desktop app of a session says that its computer had input `idleSeconds` ago. Answers whether
-   * a phone of the member gets notifications from this host, so the app knows whether to tell more.
-   */
-  computerInput(sessionId: string, memberId: string, idleSeconds: number): boolean {
-    const now = this.#now();
-    for (const [other, input] of this.#computerInput) {
-      if (now - input.at >= this.#awayAfterMs) this.#computerInput.delete(other);
-    }
-    const at = now - idleSeconds * 1_000;
-    if (now - at < this.#awayAfterMs) this.#computerInput.set(sessionId, { memberId, at });
-    else this.#computerInput.delete(sessionId);
+  /** The legacy computer-activity route asks whether this member has a registered phone. */
+  hasRegisteredPhone(memberId: string): boolean {
     return [...this.#registrations.values()].some((registration) => registration.stored.memberId === memberId);
-  }
-
-  /** The last use of the member in a session other than `sessionId`: a send, an answer, typing or computer input. */
-  #lastUseElsewhere(memberId: string, sessionId: string): number | null {
-    let last = this.#options.lastUseElsewhere(memberId, sessionId);
-    for (const [other, input] of this.#computerInput) {
-      if (other !== sessionId && input.memberId === memberId && (last === null || input.at > last)) last = input.at;
-    }
-    return last;
   }
 
   /** Reads the saved phones when the host starts. They count as away until they connect again. */
@@ -293,7 +252,6 @@ export class PushNotificationService {
 
   /** The phone turned notifications off, signed out, or the session ended. */
   remove(sessionId: string): void {
-    this.#computerInput.delete(sessionId);
     const registration = this.#registrations.get(sessionId);
     if (!this.#running || !registration) return;
     this.#dropHeld(registration);
@@ -308,7 +266,6 @@ export class PushNotificationService {
     this.#listening = false;
     for (const registration of this.#registrations.values()) this.#dropHeld(registration);
     this.#registrations.clear();
-    this.#computerInput.clear();
     yield* Fiber.awaitAll([...this.#saves]);
     yield* Scope.close(this.#scope, Exit.void);
     this.#scope = Scope.makeUnsafe();
@@ -346,9 +303,6 @@ export class PushNotificationService {
     const subject = eventSubject(event, thread !== null);
     if (!subject) return;
     const now = this.#now();
-    // The desktop notifies about a routine thread turn as about a turn of the chat. It does not notify
-    // about the turn of another side thread.
-    const desktopNotifies = !thread || thread.routine;
     const targets = (only ? [only] : [...this.#registrations.values()]).filter((registration) => {
       const { value, memberId, protocol, sessionId } = registration.stored;
       // A routine run notified from the agent's chat before each routine had a thread, so each phone
@@ -374,17 +328,7 @@ export class PushNotificationService {
       }
       if (this.#options.hiddenAgentIds(protocol, registration.capabilities, memberId).has(subject.agentId))
         return false;
-      // A member at a desktop app sees the event there, and the phone would only repeat it. No desktop
-      // notifies about a side thread turn that is not a routine's. So for it, input on the computer in
-      // another app does not count: only the use of OpenBot does, and the host computer gets the
-      // event as its desktop gets it, which shows it only in a window with focus.
-      const used = desktopNotifies
-        ? this.#lastUseElsewhere(memberId, sessionId)
-        : this.#options.lastUseElsewhere(memberId, sessionId);
-      return !(
-        (used !== null && now - used < this.#awayAfterMs) ||
-        this.#options.atHostComputer(memberId, desktopNotifies ? event : received)
-      );
+      return true;
     });
     if (!targets.length) return;
     const agents = this.#options.agents.listAgents();

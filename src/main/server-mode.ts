@@ -58,7 +58,8 @@ export function takeServerModeEnvironment(
   isPackaged: boolean,
   platform: NodeJS.Platform,
 ): ServerModeEnvironment | null {
-  if (!isPackaged || platform !== "linux" || environment.OPENBOT_SERVER !== "1") return null;
+  if (environment.OPENBOT_SERVER !== "1" || (platform !== "darwin" && !(isPackaged && platform === "linux")))
+    return null;
   // A hosted server signs in with its claim, not from a terminal.
   if (environment.OPENBOT_HOSTED_SERVER === "1") return null;
   const runtimeDirectory = environment.XDG_RUNTIME_DIR?.trim() ?? "";

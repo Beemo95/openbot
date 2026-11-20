@@ -7,18 +7,18 @@ import type { RouteOutcome, TeamApiRequestContext } from "./request-context";
 import { readJson } from "./request-helpers";
 
 /**
- * The computer of the calling member's desktop app had input, so the member's phones stay quiet.
- * Frozen by `computer-activity-v1`; only a host that sends phone notifications serves it.
+ * Accepts legacy computer-activity reports. Phone notifications no longer depend on desktop
+ * activity. The response still tells older clients whether this host has a phone registration.
  */
 export async function routeComputerActivity(
   context: TeamApiRequestContext,
   notifications: PushNotificationService | undefined,
 ): Promise<RouteOutcome> {
-  const { method, url, capabilities, request, json, member, sessionId } = context;
+  const { method, url, capabilities, request, json, member } = context;
   if (method !== "POST" || url.pathname !== COMPUTER_ACTIVITY_ROUTES.report) return "unmatched";
   if (!notifications || !capabilities.has(COMPUTER_ACTIVITY_CAPABILITY)) return "unmatched";
   // `readJson` has already run the body through the computer-activity wire codec.
   const { idleSeconds } = await readJson(request);
   if (typeof idleSeconds !== "number") return "unmatched";
-  return json(200, { phones: notifications.computerInput(sessionId, member.id, idleSeconds) });
+  return json(200, { phones: notifications.hasRegisteredPhone(member.id) });
 }

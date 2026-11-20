@@ -1,14 +1,7 @@
-// Checks that a member's phone stays quiet while the computer of the member's desktop app has input,
-// also in another app, and notifies again when the computer has had no input for the away time.
-// Before computer-activity-v1, only a send, an answer or typing in the desktop app kept the phone
-// quiet, so a member who worked in another app on the same computer got each event on the phone too.
-//
-// A real `TeamApiServer` on loopback serves `computer-activity-v1` with a real phone notification
-// service, wired as `HostService` wires it, with an away time of 2 seconds as `OPENBOT_DEV_AWAY_SECONDS`
-// sets it. A real `ComputerActivityReport` reads a synthetic idle time and sends over HTTP through the
-// frozen wire codec. The host clock and the idle time are synthetic, so no step waits for time. Two
-// phones are registered: the owner's, and one of another member as the witness that an event was
-// handled. Phone sends are recorded; nothing leaves the computer.
+// Checks that legacy `computer-activity-v1` reports remain accepted, but do not suppress a phone
+// notification. A real `TeamApiServer` on loopback serves the frozen route and a real phone
+// notification service. Two phones are registered: the owner's, and one of another member as the
+// witness that an event was handled. Phone sends are recorded; nothing leaves the computer.
 // Run it with `bun scripts/computer-activity-e2e.ts`.
 // Writes .openbot-build/computer-activity-e2e/report.json.
 import assert from "node:assert/strict";
@@ -49,7 +42,6 @@ import type { TeamApiBrowser } from "../src/main/team-api/dependencies";
 const OUT = resolve(import.meta.dirname, "../.openbot-build/computer-activity-e2e");
 const APP_VERSION = "0.0.0-e2e";
 const STEP_DEADLINE_MS = 30_000;
-const AWAY_AFTER_MS = 2_000;
 const OWNER = { username: "owner-user", password: "owner-password-123" };
 const OWNER_PHONE = "owner-phone-session";
 const WITNESS = "witness-member";
@@ -96,7 +88,6 @@ plugin({
 const { TeamApiServer } = await import("../src/main/team-api-server");
 const { TeamStore } = await import("../src/main/team-store");
 const { PushNotificationService } = await import("../src/main/push-notifications");
-const { ComputerActivityReport } = await import("../src/main/computer-activity-report");
 const { decodeComputerActivityReply } = await import("../src/main/remote-host-decoding");
 
 interface Step {
@@ -108,11 +99,7 @@ interface Step {
 
 const report: { passed: boolean; unverified: string[]; steps: Step[] } = {
   passed: false,
-  unverified: [
-    "The Electron idle time (`powerMonitor.getSystemIdleTime`). The check gives the report a synthetic idle time.",
-    "Which joined servers `RemoteServerManager` tells: online, with the capability, and shown on this desktop. That needs a remote connection.",
-    "A request over WebRTC. The check sends over HTTP; both paths run the same route codec.",
-  ],
+  unverified: ["A request over WebRTC. The check sends over HTTP; both paths run the same route codec."],
   steps: [],
 };
 
@@ -194,16 +181,11 @@ let agents: AgentService | undefined;
 let server: InstanceType<typeof TeamApiServer> | undefined;
 let phones: InstanceType<typeof PushNotificationService> | undefined;
 
-/** The clock of the host's phone service, and the clock and idle time of the desktop. */
+/** The clock of the host's phone service. */
 let hostNow = Date.now();
-let desktopNow = hostNow;
-let idleSeconds = 0;
 /** Phone sends, by session, in order. */
 const sent: string[] = [];
 const sentWaiters = new Set<() => void>();
-/** The activity requests of the desktop that have not answered yet. */
-const pending = new Set<Promise<void>>();
-const answers: boolean[] = [];
 
 function nextSendTo(sessionId: string): Promise<number> {
   const from = sent.length;
@@ -288,7 +270,6 @@ try {
     const ownerId = team.getOwnerMemberId();
     assert.ok(ownerId, "The host has no owner.");
     const service = agents;
-    // As `HostService` wires it, with the away time of `OPENBOT_DEV_AWAY_SECONDS=2`.
     phones = new PushNotificationService({
       agents: service,
       store: { list: () => [], replace: () => Effect.void },
@@ -300,9 +281,6 @@ try {
         }),
       hiddenAgentIds: () => new Set(),
       memberActive: () => true,
-      lastUseElsewhere: (memberId, sessionId) => server?.lastMemberUseElsewhere(memberId, sessionId) ?? null,
-      awayAfterMs: AWAY_AFTER_MS,
-      atHostComputer: () => false,
       liveActivityShows: () => false,
       randomBytes: (size) => new Uint8Array(randomBytes(size)),
       now: () => hostNow,
@@ -343,38 +321,15 @@ try {
     return { owner: sent.slice(from, index).includes(OWNER_PHONE) };
   }
 
-  // A server stops being a target, as when the window loses focus with desktop notifications off.
-  let targets = ["fixture-server"];
-  const activity = new ComputerActivityReport({
-    awayAfterMs: AWAY_AFTER_MS,
-    idleSeconds: () => idleSeconds,
-    targets: () => targets,
-    send: (_serverId, idle) =>
-      Effect.tryPromise(async () => {
-        const body = { idleSeconds: idle };
-        const codec = COMPUTER_ACTIVITY_CODECS.get(COMPUTER_ACTIVITY_ROUTES.report);
-        assert.ok(codec, "The route has no codec.");
-        // The client encodes through the frozen codec, as the remote transport does.
-        codec.request(body);
-        const response = await wire(port, { method: "POST", path: COMPUTER_ACTIVITY_ROUTES.report, body, token });
-        assert.equal(response.status, 200, `Activity failed: ${JSON.stringify(response.body)}`);
-        const phonesKnown = decodeComputerActivityReply(codec.response(response.status, response.body));
-        answers.push(phonesKnown);
-        return phonesKnown;
-      }),
-    run: (operation) => {
-      const done = Effect.runPromise(operation);
-      pending.add(done);
-      void done.finally(() => pending.delete(done));
-    },
-    now: () => desktopNow,
-  });
-  /** Reads the idle time once, as the timer does, and waits for the sends that it started. */
-  async function checkActivity(): Promise<number> {
-    const before = answers.length;
-    activity.check();
-    await Promise.all([...pending]);
-    return answers.length - before;
+  /** Sends a legacy desktop report through the frozen Team API codec. */
+  async function reportActivity(idleSeconds: number): Promise<boolean> {
+    const body = { idleSeconds };
+    const codec = COMPUTER_ACTIVITY_CODECS.get(COMPUTER_ACTIVITY_ROUTES.report);
+    assert.ok(codec, "The route has no codec.");
+    codec.request(body);
+    const response = await wire(port, { method: "POST", path: COMPUTER_ACTIVITY_ROUTES.report, body, token });
+    assert.equal(response.status, 200, `Activity failed: ${JSON.stringify(response.body)}`);
+    return decodeComputerActivityReply(codec.response(response.status, response.body));
   }
 
   await step("The host advertises computer-activity-v1 to a protocol 9 peer", async () => {
@@ -390,62 +345,34 @@ try {
     return result;
   });
 
-  await step("Input on the computer keeps the owner's phone quiet, and the host knows the phone", async () => {
-    idleSeconds = 0;
-    const sends = await checkActivity();
-    assert.equal(sends, 1, "The desktop did not tell the host.");
-    assert.equal(answers.at(-1), true, "The host did not say that it notifies a phone of the member.");
+  await step("A legacy input report does not suppress the owner's phone notification", async () => {
+    const phonesKnown = await reportActivity(0);
+    assert.equal(phonesKnown, true, "The host did not report the registered phone.");
     const result = await phonesFor("turn-during-input");
-    assert.equal(result.owner, false, "The owner's phone got a notification while the computer had input.");
-    return { sends, ...result };
+    assert.equal(result.owner, true, "The owner's phone was suppressed while the desktop had input.");
+    return { phonesKnown, ...result };
   });
 
-  await step("The desktop sends again only after new input", async () => {
-    desktopNow += 1_000;
-    idleSeconds = 1;
-    const quiet = await checkActivity();
-    assert.equal(quiet, 0, "The desktop sent with no input since its last send.");
-    desktopNow += 500;
-    idleSeconds = 0;
-    const again = await checkActivity();
-    assert.equal(again, 1, "The desktop did not send after new input.");
-    return { withoutInput: quiet, afterInput: again };
-  });
-
-  await step("Activity is not use of a hosted server", async () => {
+  await step("A legacy report stays passive and does not count as hosted-server use", async () => {
+    await reportActivity(0);
     assert.equal(server?.lastClientUseAt() ?? null, null, "An activity report moved the client use time.");
     return { lastClientUseAt: null };
   });
 
-  await step("After the away time without input, the owner's phone gets the event again", async () => {
-    desktopNow += AWAY_AFTER_MS;
-    idleSeconds = AWAY_AFTER_MS / 1_000;
-    const sends = await checkActivity();
-    assert.equal(sends, 0, "The desktop sent while the computer had no input for the away time.");
-    hostNow += AWAY_AFTER_MS;
+  await step("A report that says the computer is idle also leaves phone delivery unchanged", async () => {
+    hostNow += 2_000;
+    const phonesKnown = await reportActivity(2);
+    assert.equal(phonesKnown, true, "The host did not report the registered phone.");
     const result = await phonesFor("turn-after-away");
-    assert.equal(result.owner, true, "The owner's phone stayed quiet after the away time.");
-    return { sends, ...result };
+    assert.equal(result.owner, true, "The owner's phone was suppressed after the desktop became idle.");
+    return { phonesKnown, ...result };
   });
 
-  await step("A host with no phone of the member is not told again for a while", async () => {
+  await step("A legacy report says when the member has no registered phone", async () => {
     phones?.remove(OWNER_PHONE);
-    desktopNow += 1_000;
-    idleSeconds = 0;
-    const first = await checkActivity();
-    assert.equal(first, 1, "The desktop did not tell the host.");
-    assert.equal(answers.at(-1), false, "The host said that it notifies a phone of the member, which has none.");
-    desktopNow += 1_000;
-    const next = await checkActivity();
-    assert.equal(next, 0, "The desktop told a host with no phone of the member again at once.");
-    targets = [];
-    desktopNow += 1_000;
-    await checkActivity();
-    targets = ["fixture-server"];
-    desktopNow += 1_000;
-    const afterTargetChange = await checkActivity();
-    assert.equal(afterTargetChange, 0, "A target change ended the pause of a host with no phone of the member.");
-    return { first, next, afterTargetChange };
+    const phonesKnown = await reportActivity(0);
+    assert.equal(phonesKnown, false, "The host reported a phone after its registration was removed.");
+    return { phonesKnown };
   });
 
   report.passed = true;

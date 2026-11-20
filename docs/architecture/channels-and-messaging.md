@@ -96,21 +96,14 @@ while the phone looks on screen is kept in memory for 5 minutes (`HELD_EVENT_MS`
 says that it is away, or its path fails, and does not come back within 3 seconds, the host sends
 each kept event that the member has not seen: a reply that is still unread in the agent's own chat,
 a failed turn that still shows as failed, or a request that nobody answered. A send that the
-account service, Apple or Google does not take goes again after 10 and 60 seconds. No event goes while the member uses a
-desktop app, which shows the event and asks for input, an approval, or a browser step itself: that
-computer had input in the last 30 seconds (`powerMonitor.getSystemIdleState`), and
-the window of the host's own desktop app has focus or shows the event as a desktop notification, for
-the owner (`desktopShowsAgentEvent`: desktop notifications on, and the mute and the level of this
-computer's server let the event through); or the member sent, answered, or typed from another session in the last 30
-seconds (`TeamApiServer.lastMemberUseElsewhere`, kept in memory); or the computer of the member's
-desktop app had input, in any app, in the last 30 seconds (`computer-activity-v1`, see
-[servers](servers.md#computer-activity)). The time is short because a task can end at any time after
-the member leaves the computer. An unpackaged app reads another time in whole seconds from
-`OPENBOT_DEV_AWAY_SECONDS`, for the host and for the desktop that reports its input, so a check
-need not wait 30 seconds. While the phone shows a Live Activity of
-this host that iOS still updates (8 hours from its start, which the phone gives because a host that
-restarted does not know it), and the next view of the activity shows the event, the host sends no
-notification (`LiveActivityPushService.showsEvent`). The view shows one item, so a reply while
+account service, Apple or Google does not take goes again after 10 and 60 seconds. Desktop or web
+activity does not suppress a phone notification: an away phone may receive the same eligible event
+while a desktop app also displays it. The host applies the phone registration's away state, mute and
+notification level, the member's server and agent levels, the agent's notification switch, and the
+Live Activity check. It rejects events for an inactive member and applies the hidden-agent rule.
+The host uses an iPhone Live Activity in place of a notification when iOS still updates it (up to
+8 hours after it starts) and its next view shows the event (`LiveActivityPushService.showsEvent`).
+The phone gives the start because a restarted host does not know it. The view shows one item, so a reply while
 another agent works, or a failure while another agent waits, still notifies. An activity whose last
 update did not go out does not replace notifications. With a sound (Settings > Notifications > Sound), the next
 update of the activity alerts at once, so iOS lights up the screen, shows the activity, and plays
@@ -146,11 +139,9 @@ phone registers again. A request for input, an approval or a browser step of a s
 read the choice. The level, the mute, the preview and the Live Activity check apply as for the
 agent's chat, but the Live Activity shows the replies and the failed turn of the agent's own chat
 only, so it never replaces the notification of a side thread turn. The desktop notification and the
-completion sound still use routine thread turns only. So for the turn of another side thread, the
-phone stays quiet only while the member uses OpenBot: the window of the host's desktop app has focus,
-or the member sent, answered, or typed from another session in the last 30 seconds. Input in another
-app on a computer does not count for it, because no desktop then tells about that turn. A host does
-not keep such a turn for a phone that does not take it.
+completion sound still use routine thread turns only. The host may send a side thread notification
+while the member uses OpenBot or another app. A host does not keep such a turn for a phone that does
+not take it.
 
 The notification data has the thread of the event, not a task id, and the phone does not know the
 thread of an agent's own chat. So the app (`outside-target.ts`, used by `(app)/_layout.tsx`) opens

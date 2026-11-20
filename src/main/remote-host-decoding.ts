@@ -27,7 +27,7 @@ export const decodeVoid = emptyDecoder("The remote server returned data.");
 /** Discards the reply of a route whose team-protocol codec has already checked it. */
 export const acceptEmpty = (): undefined => undefined;
 
-/** Whether the host notifies a phone of the member. The `computer-activity-v1` codec has already checked the reply. */
+/** Whether the member has a phone registered with the host. The wire codec has checked the reply. */
 export const decodeComputerActivityReply = (value: unknown): boolean => isDynamicRecord(value) && value.phones === true;
 
 /** The web client uses the same remote boundary; the preload has its own decoder. */

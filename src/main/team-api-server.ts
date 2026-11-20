@@ -624,7 +624,9 @@ export class TeamApiServer {
   #port: number | null = null;
   #heartbeat: ReturnType<typeof setInterval> | null = null;
   #lastClientUseAt: number | null = null;
-  readonly #sessionUse = new Map<string, { memberId: string; at: number }>();
+  /** Each session's last action, used to account for hosted-server idle time and focus periods. */
+  readonly #sessionUse = new Map<string, { at: number }>();
+  /** When the focus period of each session started, and its last focus ping. Push notifications do not read it. */
   readonly #sessionFocus = new Map<string, { since: number; at: number }>();
   #agentListener: ((event: AgentEvent, memberId?: string) => void) | null = null;
   #sidebarLayoutListener: ((layout: SidebarLayoutSnapshot) => void) | null = null;
@@ -837,19 +839,11 @@ export class TeamApiServer {
     return this.#lastClientUseAt;
   }
 
-  lastMemberUseElsewhere(memberId: string, sessionId: string): number | null {
-    let last: number | null = null;
-    for (const [other, use] of this.#sessionUse) {
-      if (other !== sessionId && use.memberId === memberId && (last === null || use.at > last)) last = use.at;
-    }
-    return last;
-  }
-
-  #recordClientUse(sessionId: string | null, memberId: string): void {
+  #recordClientUse(sessionId: string | null): void {
     const now = Date.now();
     this.#lastClientUseAt = now;
     if (!sessionId) return;
-    this.#sessionUse.set(sessionId, { memberId, at: now });
+    this.#sessionUse.set(sessionId, { at: now });
     pruneSessions(this.#sessionUse, now);
   }
 
@@ -1172,7 +1166,7 @@ export class TeamApiServer {
       if (!authenticated || !token) {
         return this.#json(response, 401, { error: sourceText("error.team.authenticationRequired") });
       }
-      if (isClientUse(method, url.pathname)) this.#recordClientUse(authenticated.sessionId, authenticated.member.id);
+      if (isClientUse(method, url.pathname)) this.#recordClientUse(authenticated.sessionId);
       const context = this.#requestContext(request, response, url, token, authenticated);
       if (method === "GET" && url.pathname === TEAM_API_ROUTES.agents.all && this.#options.agentsReady) {
         await runCauseEffect(this.#options.agentsReady());
@@ -2299,7 +2293,7 @@ export class TeamApiServer {
   }
 
   #setClientTyping(connection: EventClientState, agentId: string | null): void {
-    this.#recordClientUse(connection.sessionId, connection.memberId);
+    this.#recordClientUse(connection.sessionId);
     const changed = connection.typingAgentId !== agentId;
     connection.typingAgentId = agentId;
     if (connection.typingTimer) clearTimeout(connection.typingTimer);
@@ -2316,7 +2310,7 @@ export class TeamApiServer {
   }
 
   #setClientDirectTyping(connection: EventClientState, recipientMemberId: string | null): void {
-    this.#recordClientUse(connection.sessionId, connection.memberId);
+    this.#recordClientUse(connection.sessionId);
     const previousRecipientId = connection.directTypingRecipientId;
     const changed = previousRecipientId !== recipientMemberId;
     const recipientAlreadyActive = recipientMemberId

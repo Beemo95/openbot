@@ -289,7 +289,8 @@ const localServerControl = localServerChild
 if (serverMode || hostedServer || localServerChild) hideExceptionErrorBox();
 if (serverMode || hostedServer || localServerChild) keepWindowsHidden();
 if (developmentProfile && process.env.OPENBOT_DEV_WINDOW_FOCUS === "background") openWindowsInBackground();
-if (localServerChild && process.platform === "darwin") app.dock?.hide();
+// A local server has no window, so it has no Dock tile either.
+if ((localServerChild || serverMode) && process.platform === "darwin") app.dock?.hide();
 const inviteLinkOptions = {
   allowLocalDevelopmentApiUrl: developmentRemoteRole !== null,
   selfHostedApiOrigin: selfHostedApiOrigin(process.env.OPENBOT_AUTH_API_URL),

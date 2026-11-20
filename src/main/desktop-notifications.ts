@@ -9,15 +9,12 @@ import { Effect } from "effect";
 import type { Notification } from "electron";
 import type { NotificationPreferenceStore } from "./notification-preference-store";
 
-export function desktopShowsAgentEvent(
-  event: AgentEvent,
-  server: Pick<ServerSummary, "notificationsMuted" | "notificationLevel"> | undefined,
-  enabled: boolean,
-  agentLevels: ReadonlyMap<string, ServerNotificationLevel> | null = null,
-): boolean {
-  return desktopAgentEventLevel(event, server, enabled, agentLevels) !== null;
-}
-
+/**
+ * The level that the desktop notifies a server's event at, or null when it stays quiet: the level that
+ * the user chose for the agent, or else the server level. A usage limit is about the account, so the
+ * level of an agent does not silence it. A failed subagent notifies at "all", as a failed turn does.
+ * An agent in `hiddenAgentIds` is one that the user hid (see `agentNotificationLevel`).
+ */
 export function desktopAgentEventLevel(
   event: AgentEvent,
   server: Pick<ServerSummary, "notificationsMuted" | "notificationLevel"> | undefined,

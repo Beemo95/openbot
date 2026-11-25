@@ -1,3 +1,4 @@
+import { OPENBOT_AGENT_TEMPLATE_ORIGIN } from "@openbot/contracts/agent-template-links";
 import { type AgentTemplateDetail, decodeAgentTemplateDetail } from "@openbot/contracts/ipc";
 import { fetch } from "@/features/support/model/logged-fetch";
 import { currentText } from "@/shared/lib/text";
@@ -10,20 +11,17 @@ export class AgentTemplateNotFoundError extends Error {
   }
 }
 
-export async function loadAgentTemplate(
-  apiUrl: string,
-  templateId: string,
-  signal?: AbortSignal,
-): Promise<AgentTemplateDetail> {
+export async function loadAgentTemplate(templateId: string, signal?: AbortSignal): Promise<AgentTemplateDetail> {
   const controller = new AbortController();
   const abort = () => controller.abort();
   signal?.addEventListener("abort", abort, { once: true });
   if (signal?.aborted) controller.abort();
   const timeout = setTimeout(abort, AGENT_TEMPLATE_REQUEST_TIMEOUT_MS);
   try {
-    const response = await fetch(new URL(`/v1/agent-templates/${encodeURIComponent(templateId)}`, apiUrl).toString(), {
-      signal: controller.signal,
-    });
+    const response = await fetch(
+      new URL(`/v1/agent-templates/${encodeURIComponent(templateId)}`, OPENBOT_AGENT_TEMPLATE_ORIGIN).toString(),
+      { credentials: "omit", signal: controller.signal },
+    );
     if (response.status === 404) throw new AgentTemplateNotFoundError();
     if (!response.ok) throw new Error(currentText().t("mobile.link.template.error.loadFailed"));
     const detail = decodeAgentTemplateDetail(await response.json());

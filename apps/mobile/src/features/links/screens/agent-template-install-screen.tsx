@@ -1,3 +1,4 @@
+import { OPENBOT_AGENT_TEMPLATE_ORIGIN } from "@openbot/contracts/agent-template-links";
 import { type AgentTemplateDetail, canAdministerServer, type RoutineSchedule } from "@openbot/contracts/ipc";
 import type { MobileTextKey } from "@openbot/i18n/mobile";
 import { useQuery } from "@tanstack/react-query";
@@ -44,14 +45,13 @@ function AgentTemplateInstall({ request }: { request?: string }) {
     forgetIncomingLink(request);
   }, [request]);
   const templateId = link.kind === "template" ? link.templateId : null;
-  const apiUrl = session?.apiUrl ?? null;
   const template = useQuery({
-    queryKey: queryKeys.agentTemplate(apiUrl, templateId),
+    queryKey: queryKeys.agentTemplate(OPENBOT_AGENT_TEMPLATE_ORIGIN, templateId),
     queryFn: ({ signal }) => {
-      if (!apiUrl || !templateId) throw new AgentTemplateNotFoundError();
-      return loadAgentTemplate(apiUrl, templateId, signal);
+      if (!templateId) throw new AgentTemplateNotFoundError();
+      return loadAgentTemplate(templateId, signal);
     },
-    enabled: apiUrl !== null && templateId !== null,
+    enabled: session !== null && templateId !== null,
     gcTime: 0,
     retry: false,
   });
@@ -140,7 +140,7 @@ function AgentTemplateInstall({ request }: { request?: string }) {
       ) : null}
       {detail ? (
         <View className="gap-6">
-          <TemplatePreview detail={detail} apiUrl={apiUrl} />
+          <TemplatePreview detail={detail} />
           <Cascade step={4}>
             <ServerChoices
               servers={managed}
@@ -195,9 +195,9 @@ function TemplateMessage({ title, description }: { title: string; description: s
   );
 }
 
-function TemplatePreview({ detail, apiUrl }: { detail: AgentTemplateDetail; apiUrl: string | null }) {
+function TemplatePreview({ detail }: { detail: AgentTemplateDetail }) {
   const { t } = useText();
-  const avatarUrl = detail.avatarUrl && apiUrl ? new URL(detail.avatarUrl, apiUrl).toString() : null;
+  const avatarUrl = publicTemplateAvatarUrl(detail);
   return (
     <>
       <Cascade step={0}>
@@ -272,6 +272,25 @@ function TemplatePreview({ detail, apiUrl }: { detail: AgentTemplateDetail; apiU
       </Cascade>
     </>
   );
+}
+
+function publicTemplateAvatarUrl(detail: AgentTemplateDetail): string | null {
+  if (!detail.avatarUrl) return null;
+  try {
+    const url = new URL(detail.avatarUrl, OPENBOT_AGENT_TEMPLATE_ORIGIN);
+    if (
+      url.origin !== OPENBOT_AGENT_TEMPLATE_ORIGIN ||
+      url.username !== "" ||
+      url.password !== "" ||
+      url.pathname !== `/v1/agent-templates/${encodeURIComponent(detail.id)}/avatar` ||
+      url.hash !== "" ||
+      (url.search !== "" && (url.searchParams.size !== 1 || !/^\d+$/u.test(url.searchParams.get("v") ?? "")))
+    )
+      return null;
+    return url.toString();
+  } catch {
+    return null;
+  }
 }
 
 function EmbeddedSkill({ name, markdown }: { name: string; markdown: string }) {

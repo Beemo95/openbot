@@ -2711,6 +2711,7 @@ export async function createApplicationServices({
   const agentTemplates = new AgentTemplateService(centralAuth, service, {
     listTemplateSkills: (agentId) => skills.listTemplateSkills(agentId),
     installVersion: (input) => skills.installVersion(input),
+    installPublicVersion: (input) => skills.installPublicVersion(input),
     library: () => skills.requireLocalLibrary(),
     installLocal: (input) => skills.installLocal(input),
   });

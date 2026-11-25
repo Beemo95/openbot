@@ -2,6 +2,7 @@ import { createHash, randomUUID } from "node:crypto";
 import { lstat, mkdir, readdir, readFile, rename, rm, stat, writeFile } from "node:fs/promises";
 import { dirname, join, relative, resolve } from "node:path";
 import { MANAGED_SKILL_FOLDERS } from "@openbot/contracts/agent-providers";
+import { OPENBOT_AGENT_TEMPLATE_ORIGIN } from "@openbot/contracts/agent-template-links";
 import { INPUT_LIMITS } from "@openbot/contracts/input-limits";
 import type {
   AgentSummary,
@@ -50,6 +51,7 @@ import {
   inspectSkillMarkdown,
   isRuntimeCacheFile,
   isRuntimeCacheFolder,
+  MAX_BYTES,
   normalizedFiles,
   readSkillArchive,
 } from "./skill-package";
@@ -57,6 +59,7 @@ import {
 const DRAFT_LIFETIME_MS = 30 * 60 * 1000;
 const CATALOG_VERSION_LIFETIME = "60 seconds";
 const SKILL_FOLDER_PATTERN = /^[a-z0-9][a-z0-9-]{0,63}$/u;
+type PublicFetch = (input: string | URL | Request, init?: RequestInit) => Promise<Response>;
 
 interface Draft {
   bytes: Uint8Array;
@@ -98,6 +101,7 @@ export class SkillMarketplaceService {
       Effect.void,
     readonly localLibrary?: LocalSkillLibrary,
     private readonly github?: GithubSkillSourceReader,
+    private readonly publicFetch: PublicFetch = fetch,
   ) {}
 
   readGithub(link: string): Effect.Effect<GithubSkillSource, SkillMarketplaceFailure> {
@@ -335,6 +339,62 @@ export class SkillMarketplaceService {
         )
         .pipe(toSkillMarketplaceFailure);
       return yield* this.installResolved(agent, detail, bundle, input.replaceModified);
+    });
+  }
+
+  installPublicVersion(input: {
+    agentId: string;
+    skillId: string;
+    versionId: string;
+  }): Effect.Effect<InstalledSkill, SkillMarketplaceFailure> {
+    return Effect.gen({ self: this }, function* (): Effect.fn.Return<InstalledSkill, SkillMarketplaceFailure> {
+      const agent = yield* skillSync(() => this.requireAgent(input.agentId));
+      const path = `/v1/skills/${encodeURIComponent(input.skillId)}/versions/${encodeURIComponent(input.versionId)}`;
+      const detail = yield* this.readPublicCatalogJson(path, decodeMarketplaceSkillDetail);
+      const bundle = yield* this.readPublicCatalogBytes(`${path}/content`);
+      return yield* this.installResolved(agent, detail, bundle);
+    });
+  }
+
+  private publicCatalogResponse(path: string): Effect.Effect<Response, SkillMarketplaceFailure> {
+    return Effect.tryPromise({
+      try: (signal) => {
+        const url = new URL(path, OPENBOT_AGENT_TEMPLATE_ORIGIN);
+        if (url.origin !== OPENBOT_AGENT_TEMPLATE_ORIGIN) throw new Error("Public catalog URL is invalid.");
+        return this.publicFetch(url, {
+          headers: { accept: "application/json" },
+          credentials: "omit",
+          cache: "no-store",
+          redirect: "error",
+          signal: AbortSignal.any([signal, AbortSignal.timeout(30_000)]),
+        });
+      },
+      catch: () => publicSkillFailure(),
+    });
+  }
+
+  private readPublicCatalogJson<T>(
+    path: string,
+    decode: (value: unknown) => T,
+  ): Effect.Effect<T, SkillMarketplaceFailure> {
+    return Effect.gen({ self: this }, function* () {
+      const response = yield* this.publicCatalogResponse(path);
+      if (!response.ok) return yield* publicSkillFailure();
+      const value = yield* Effect.tryPromise({ try: () => response.json(), catch: () => publicSkillFailure() });
+      return yield* Effect.try({ try: () => decode(value), catch: () => publicSkillFailure() });
+    });
+  }
+
+  private readPublicCatalogBytes(path: string): Effect.Effect<Uint8Array, SkillMarketplaceFailure> {
+    return Effect.gen({ self: this }, function* () {
+      const response = yield* this.publicCatalogResponse(path);
+      if (!response.ok) return yield* publicSkillFailure();
+      const contentLength = Number(response.headers.get("Content-Length"));
+      if (Number.isFinite(contentLength) && contentLength > MAX_BYTES) return yield* publicSkillFailure();
+      return yield* Effect.tryPromise({
+        try: () => readLimitedResponse(response, MAX_BYTES),
+        catch: () => publicSkillFailure(),
+      });
     });
   }
 
@@ -1259,3 +1319,39 @@ export class SkillMarketplaceFailure extends Schema.TaggedError<SkillMarketplace
 }) {}
 
 const { io: skillIO, sync: skillSync, rewrap: toSkillMarketplaceFailure } = causeHelpers(SkillMarketplaceFailure);
+
+function publicSkillFailure(): SkillMarketplaceFailure {
+  return new SkillMarketplaceFailure({ cause: new Error(sourceText("error.skill.notFound")) });
+}
+
+async function readLimitedResponse(response: Response, limit: number): Promise<Uint8Array> {
+  const reader = response.body?.getReader();
+  if (!reader) {
+    const bytes = new Uint8Array(await response.arrayBuffer());
+    if (bytes.byteLength > limit) throw new Error("Response is too large.");
+    return bytes;
+  }
+  const chunks: Uint8Array[] = [];
+  let size = 0;
+  try {
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      size += value.byteLength;
+      if (size > limit) {
+        await reader.cancel();
+        throw new Error("Response is too large.");
+      }
+      chunks.push(value);
+    }
+  } finally {
+    reader.releaseLock();
+  }
+  const bytes = new Uint8Array(size);
+  let offset = 0;
+  for (const chunk of chunks) {
+    bytes.set(chunk, offset);
+    offset += chunk.byteLength;
+  }
+  return bytes;
+}

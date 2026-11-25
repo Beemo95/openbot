@@ -16,6 +16,7 @@ import { request as httpRequest } from "node:http";
 import { homedir, tmpdir } from "node:os";
 import { join, parse, resolve } from "node:path";
 import { isDeepStrictEqual } from "node:util";
+import { OPENBOT_AGENT_TEMPLATE_ORIGIN } from "@openbot/contracts/agent-template-links";
 import { ATTACHMENT_LIMITS, INPUT_LIMITS } from "@openbot/contracts/input-limits";
 import {
   type AccountUsageLimit,
@@ -29,6 +30,7 @@ import {
   type AgentSummary,
   type AgentTask,
   type AgentTaskHold,
+  type AgentTemplateDetail,
   type AttachmentDataInput,
   type BitwardenConnectorStatus,
   type CentralAuthUser,
@@ -64,6 +66,7 @@ import {
   type LibraryFolderAction,
   LOCAL_VOICE_MODEL_IDS,
   type LocalVoiceModelId,
+  type MarketplaceSkillDetail,
   type PasswordManagerConnectMethod,
   type PasswordManagerStatus,
   type PinnedMessagesSnapshot,
@@ -131,6 +134,7 @@ import {
   AGENT_IMPORT_V2_ROUTES,
   agentImportV2ChunkPath,
 } from "@openbot/contracts/team-protocol/agent-import-v2";
+import { AGENT_INSTALL_CAPABILITY, AGENT_INSTALL_ROUTES } from "@openbot/contracts/team-protocol/agent-install-v1";
 import {
   AGENT_INSTRUCTIONS_CAPABILITY,
   AGENT_INSTRUCTIONS_ROUTES,
@@ -575,6 +579,7 @@ import { createAgentHostSettings } from "../src/main/agent-host-settings";
 import { AgentImportService } from "../src/main/agent-import-service";
 import { createAgentInstructionsFiles } from "../src/main/agent-instructions-files";
 import { AgentNotificationLevelStore } from "../src/main/agent-notification-level-store";
+import { AgentTemplateService } from "../src/main/agent-template-service";
 import {
   type BitwardenCliRunner,
   BitwardenConnectorService,
@@ -588,6 +593,7 @@ import {
   cacheExpiryCompactionControl,
   createCacheExpiryCompactionPreferenceStore,
 } from "../src/main/cache-expiry-compaction-preference-store";
+import { CentralAuthOperationError } from "../src/main/central-auth-effects";
 import { createChannelFolders } from "../src/main/channel-folders";
 import {
   claudeCompactWindowControl,
@@ -611,6 +617,7 @@ import {
   INSTANCE_TRANSFER_VERSION,
 } from "../src/main/instance-transfer-manifest";
 import { LibraryFoldersService, type LibraryFoldersSources } from "../src/main/library-folders-service";
+import { LocalSkillLibrary } from "../src/main/local-skill-library";
 import { MachineAlertMonitor, MachineAlertPreferenceStore } from "../src/main/machine-alerts";
 import { MemoryReviewPreferenceStore } from "../src/main/memory-review-preference-store";
 import { ModelReleaseCatalog, ModelVisibility } from "../src/main/model-visibility";
@@ -2782,6 +2789,158 @@ try {
     userDataPath: join(root, "user-data"),
     browse: (path) => agentFolders.browse(path),
   });
+  const sharedTemplateId = "xwDzXa5f7bdgNuenppquGQ";
+  const sharedTemplateUpdatedAt = "2026-11-24T19:48:18.261Z";
+  const sharedSkillId = "skill-shared-template-e2e";
+  const sharedSkillVersionId = "skill-shared-template-e2e-v1";
+  const sharedSkillMarkdown =
+    "---\nname: shared-template-check\ndescription: Checks one shared-template install.\n---\n\n# Shared template check\n";
+  const sharedSkillBundle = zipSync({ "SKILL.md": strToU8(sharedSkillMarkdown) });
+  const sharedSkillDetail: MarketplaceSkillDetail = {
+    id: sharedSkillId,
+    slug: "shared-template-check",
+    name: "Shared template check",
+    description: "Checks one shared-template install.",
+    category: "productivity",
+    creatorName: "OpenBot",
+    version: 1,
+    versionId: sharedSkillVersionId,
+    installs: 0,
+    featured: false,
+    iconUrl: null,
+    updatedAt: sharedTemplateUpdatedAt,
+    bundleSha256: createHash("sha256").update(sharedSkillBundle).digest("hex"),
+    files: ["SKILL.md"],
+    instructions: "Confirm the shared template works.",
+  };
+  const sharedTemplateDetail: AgentTemplateDetail = {
+    id: sharedTemplateId,
+    name: "Shared template E2E",
+    title: "Installed through the host API",
+    description: "Installs a public shared template on the host.",
+    avatarSeed: "shared-template-e2e",
+    avatarHue: 0,
+    skills: [
+      {
+        kind: "embedded",
+        slug: "shared-embedded-check",
+        name: "shared-embedded-check",
+        markdown:
+          "---\nname: shared-embedded-check\ndescription: Checks an embedded template skill.\n---\n\n# Embedded check\n",
+      },
+      {
+        kind: "marketplace",
+        skillId: sharedSkillId,
+        versionId: sharedSkillVersionId,
+        slug: sharedSkillDetail.slug,
+        name: sharedSkillDetail.name,
+        version: sharedSkillDetail.version,
+      },
+    ],
+    routines: [],
+    avatarUrl: `/v1/agent-templates/${sharedTemplateId}/avatar?v=123`,
+    creatorName: "OpenBot",
+    updatedAt: sharedTemplateUpdatedAt,
+  };
+  const publicRequests: Array<{
+    url: string;
+    authorization: string | null;
+    credentials: RequestCredentials | undefined;
+    redirect: RequestRedirect | undefined;
+  }> = [];
+  const publicFetch: (input: string | URL | Request, init?: RequestInit) => Promise<Response> = async (input, init) => {
+    const url = new URL(input instanceof Request ? input.url : String(input));
+    const headers = new Headers(init?.headers);
+    publicRequests.push({
+      url: url.toString(),
+      authorization: headers.get("authorization"),
+      credentials: init?.credentials,
+      redirect: init?.redirect,
+    });
+    if (url.pathname === `/v1/agent-templates/${sharedTemplateId}`) return Response.json(sharedTemplateDetail);
+    if (url.pathname === `/v1/agent-templates/${sharedTemplateId}/avatar`)
+      return new Response(new Uint8Array([0xff, 0xd8, 0xff]), { headers: { "Content-Type": "image/jpeg" } });
+    if (url.pathname === `/v1/skills/${sharedSkillId}/versions/${sharedSkillVersionId}`)
+      return Response.json(sharedSkillDetail);
+    if (url.pathname === `/v1/skills/${sharedSkillId}/versions/${sharedSkillVersionId}/content`)
+      return new Response(sharedSkillBundle);
+    throw new Error(`Unexpected public request: ${url.pathname}`);
+  };
+  const localAccountPaths: string[] = [];
+  const missingAccountApi = {
+    requestAuthorized: (path: string) => {
+      localAccountPaths.push(path);
+      return Effect.fail(
+        new CentralAuthOperationError({ cause: new Error("The configured API has no shared template.") }),
+      );
+    },
+    downloadAuthorized: () =>
+      Effect.fail(new CentralAuthOperationError({ cause: new Error("The configured API has no shared avatar.") })),
+    resolveApiUrl: (path: string) => new URL(path, "http://127.0.0.1:3100").toString(),
+  };
+  const installedTemplateAgents: AgentSummary[] = [];
+  const installedTemplateRoutines: string[] = [];
+  const templateAgents = {
+    listAgents: () => installedTemplateAgents,
+    listRoutines: () => [],
+    resolveAvatar: () => null,
+    createAgentProfile: (input: {
+      name: string;
+      title?: string;
+      description: string;
+      avatarSeed: string;
+      avatarHue: AgentSummary["avatarHue"];
+    }) =>
+      Effect.sync(() => {
+        const created = {
+          ...agent("agent-shared-template-install", input.name, "claude", "claude-sonnet-4-5"),
+          title: input.title ?? "",
+          description: input.description,
+          avatarSeed: input.avatarSeed,
+          avatarHue: input.avatarHue,
+        };
+        mkdirSync(created.workspacePath, { recursive: true });
+        installedTemplateAgents.push(created);
+        return created;
+      }),
+    setAvatar: (agentId: string) =>
+      Effect.sync(() => {
+        const current = installedTemplateAgents.find((item) => item.id === agentId);
+        if (!current) throw new Error("Shared template agent was not created.");
+        return current;
+      }),
+    createRoutine: (input: { name: string }) => {
+      installedTemplateRoutines.push(input.name);
+      return { id: `routine-${input.name}` };
+    },
+    deleteAgent: (agentId: string) =>
+      Effect.sync(() => {
+        const index = installedTemplateAgents.findIndex((item) => item.id === agentId);
+        if (index >= 0) installedTemplateAgents.splice(index, 1);
+      }),
+  };
+  const templateLibrary = new LocalSkillLibrary(join(root, "shared-template-skills"), () => installedTemplateAgents);
+  const templateSkillService = new SkillMarketplaceService(
+    missingAccountApi,
+    () => installedTemplateAgents,
+    () => Effect.void,
+    templateLibrary,
+    undefined,
+    publicFetch,
+  );
+  const agentTemplates = new AgentTemplateService(
+    missingAccountApi,
+    templateAgents,
+    {
+      listTemplateSkills: (agentId) => templateSkillService.listTemplateSkills(agentId),
+      installVersion: (input) => templateSkillService.installVersion(input),
+      installPublicVersion: (input) => templateSkillService.installPublicVersion(input),
+      library: () => templateLibrary,
+      installLocal: (input) => templateSkillService.installLocal(input),
+    },
+    publicFetch,
+  );
+
   server = new TeamApiServer({
     appVersion: APP_VERSION,
     agentImport,
@@ -2796,6 +2955,10 @@ try {
     chat: new TeamChatStore(database),
     skills: chatSkills,
     admin: {
+      marketplaceAgents: {
+        install: () => Effect.die("The shared-template route does not use marketplace agent installs."),
+      },
+      agentTemplates,
       skills: githubSkillsAdmin,
       modelVisibility: new ModelVisibility({
         path: join(root, "model-visibility.json"),
@@ -3456,6 +3619,60 @@ try {
       "identity answers without a token and names this server",
       identity.status === 200 && field(identity.body, "serverId") === serverId,
       summary(identity),
+    );
+  }
+
+  {
+    const installInput = {
+      templateId: sharedTemplateId,
+      timezone: "UTC",
+      expectedUpdatedAt: sharedTemplateUpdatedAt,
+    };
+    const unsupported = await call("POST", AGENT_INSTALL_ROUTES.template, {
+      token: owner.sessionToken,
+      json: installInput,
+    });
+    check(
+      "shared template install route requires the host capability",
+      unsupported.status === 400 && field(unsupported.body, "error") !== null,
+      summary(unsupported),
+    );
+    const installed = await call("POST", AGENT_INSTALL_ROUTES.template, {
+      token: owner.sessionToken,
+      json: installInput,
+      capabilities: [AGENT_INSTALL_CAPABILITY],
+    });
+    const installedAgent = installedTemplateAgents[0];
+    const embeddedSkillPath = installedAgent
+      ? join(installedAgent.workspacePath, ".agents", "skills", "shared-embedded-check", "SKILL.md")
+      : "";
+    const marketplaceSkillPath = installedAgent
+      ? join(installedAgent.workspacePath, ".agents", "skills", "shared-template-check", "SKILL.md")
+      : "";
+    check(
+      "a self-hosted host installs a public shared template through Team API",
+      installed.status === 200 &&
+        field(installed.body, "agentId") === "agent-shared-template-install" &&
+        field(installed.body, "name") === "Shared template E2E",
+      summary(installed),
+    );
+    check(
+      "template installation adds embedded and marketplace skills",
+      Boolean(installedAgent && existsSync(embeddedSkillPath) && existsSync(marketplaceSkillPath)),
+      { embedded: existsSync(embeddedSkillPath), marketplace: existsSync(marketplaceSkillPath) },
+    );
+    check(
+      "public template, avatar, and skill requests use OpenBot without credentials",
+      localAccountPaths.includes(`/v1/agent-templates/${sharedTemplateId}`) &&
+        publicRequests.length === 4 &&
+        publicRequests.every(
+          (request) =>
+            new URL(request.url).origin === OPENBOT_AGENT_TEMPLATE_ORIGIN &&
+            request.authorization === null &&
+            request.credentials === "omit" &&
+            request.redirect === "error",
+        ),
+      { accountLookup: localAccountPaths, publicRequests },
     );
   }
 

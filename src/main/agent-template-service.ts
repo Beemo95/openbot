@@ -4,8 +4,9 @@ import {
   agentTemplateShareOrigin,
   createAgentTemplateShareUrl,
   isAgentTemplateId,
+  OPENBOT_AGENT_TEMPLATE_ORIGIN,
 } from "@openbot/contracts/agent-template-links";
-import { INPUT_LIMITS } from "@openbot/contracts/input-limits";
+import { AVATAR_IMAGE_LIMITS, INPUT_LIMITS } from "@openbot/contracts/input-limits";
 import {
   AGENT_TEMPLATE_LIMITS,
   type AgentSummary,
@@ -121,6 +122,11 @@ interface AgentTemplateSkills {
     skillId: string;
     versionId: string;
   }): Effect.Effect<unknown, SkillMarketplaceFailure>;
+  installPublicVersion(input: {
+    agentId: string;
+    skillId: string;
+    versionId: string;
+  }): Effect.Effect<unknown, SkillMarketplaceFailure>;
   library(): Pick<LocalSkillLibrary, "list" | "create" | "revise" | "bundle" | "withdraw">;
   installLocal(input: {
     agentId: string;
@@ -135,11 +141,19 @@ interface OwnedTemplate {
   updatedAt: string;
 }
 
+interface LoadedAgentTemplate {
+  detail: AgentTemplateDetail;
+  source: "account" | "public";
+}
+
+type PublicFetch = (input: string | URL | Request, init?: RequestInit) => Promise<Response>;
+
 export class AgentTemplateService {
   constructor(
     private readonly auth: AgentTemplateAuth,
     private readonly agents: AgentTemplateAgents,
     private readonly skills: AgentTemplateSkills,
+    private readonly publicFetch: PublicFetch = fetch,
   ) {}
 
   preview(agentId: string): Effect.Effect<AgentTemplatePreview, AgentTemplateFailure> {
@@ -208,20 +222,8 @@ export class AgentTemplateService {
 
   get(templateId: string): Effect.Effect<AgentTemplateDetail, AgentTemplateFailure> {
     return Effect.gen({ self: this }, function* (): Effect.fn.Return<AgentTemplateDetail, AgentTemplateFailure> {
-      if (!isAgentTemplateId(templateId))
-        return yield* new AgentTemplateFailure({ cause: new Error(sourceText("error.marketplace.linkInvalid")) });
-      const detail = yield* this.auth
-        .requestAuthorized(
-          `/v1/agent-templates/${encodeURIComponent(templateId)}`,
-          { method: "GET" },
-          decodeAgentTemplateDetail,
-        )
-        .pipe(toAgentTemplateFailure);
-      return {
-        ...detail,
-        skills: detail.skills.filter((skill) => skill.kind !== "embedded" || !MANAGED_SKILL_SLUGS.has(skill.slug)),
-        avatarUrl: detail.avatarUrl ? this.auth.resolveApiUrl(detail.avatarUrl) : null,
-      };
+      const loaded = yield* this.loadTemplate(templateId);
+      return yield* templateSync(() => this.resolveTemplateUrls(loaded));
     });
   }
 
@@ -229,7 +231,8 @@ export class AgentTemplateService {
     return Effect.gen({ self: this }, function* (): Effect.fn.Return<InstallAgentTemplateResult, AgentTemplateFailure> {
       if (!validTimezone(input.timezone))
         return yield* new AgentTemplateFailure({ cause: new Error(sourceText("error.marketplace.timezoneInvalid")) });
-      const detail = yield* this.get(input.templateId);
+      const loaded = yield* this.loadTemplate(input.templateId);
+      const detail = yield* templateSync(() => this.resolveTemplateUrls(loaded));
       if (detail.updatedAt !== input.expectedUpdatedAt)
         return yield* new AgentTemplateFailure({
           cause: new Error(sourceText("error.marketplace.changedSinceOpened")),
@@ -250,7 +253,10 @@ export class AgentTemplateService {
       let avatar: AvatarImageInput | null = null;
       if (detail.avatarUrl) {
         const avatarUrl = detail.avatarUrl;
-        const bytes = yield* this.auth.downloadAuthorized(avatarUrl).pipe(toAgentTemplateFailure);
+        const bytes =
+          loaded.source === "public"
+            ? yield* this.downloadPublicAvatar(avatarUrl)
+            : yield* this.auth.downloadAuthorized(avatarUrl).pipe(toAgentTemplateFailure);
         const mimeType = imageMimeType(bytes);
         if (!mimeType)
           return yield* new AgentTemplateFailure({ cause: new Error(sourceText("error.marketplace.avatarInvalid")) });
@@ -272,9 +278,10 @@ export class AgentTemplateService {
           Effect.gen({ self: this }, function* () {
             for (const skill of detail.skills) {
               if (skill.kind === "marketplace") {
-                yield* this.skills
-                  .installVersion({ agentId: agent.id, skillId: skill.skillId, versionId: skill.versionId })
-                  .pipe(toAgentTemplateFailure);
+                const install = { agentId: agent.id, skillId: skill.skillId, versionId: skill.versionId };
+                if (loaded.source === "public")
+                  yield* this.skills.installPublicVersion(install).pipe(toAgentTemplateFailure);
+                else yield* this.skills.installVersion(install).pipe(toAgentTemplateFailure);
                 continue;
               }
               const existing = existingSkills.get(inspectSkillMarkdown(skill.markdown).slug);
@@ -341,6 +348,90 @@ export class AgentTemplateService {
   snapshot(agent: AgentSummary): Effect.Effect<AgentTemplateSnapshot, AgentTemplateFailure> {
     return Effect.gen({ self: this }, function* (): Effect.fn.Return<AgentTemplateSnapshot, AgentTemplateFailure> {
       return this.profile(agent, yield* this.skills.listTemplateSkills(agent.id).pipe(toAgentTemplateFailure));
+    });
+  }
+
+  private loadTemplate(templateId: string): Effect.Effect<LoadedAgentTemplate, AgentTemplateFailure> {
+    return Effect.gen({ self: this }, function* (): Effect.fn.Return<LoadedAgentTemplate, AgentTemplateFailure> {
+      if (!isAgentTemplateId(templateId))
+        return yield* new AgentTemplateFailure({ cause: new Error(sourceText("error.marketplace.linkInvalid")) });
+      const local = yield* Effect.result(
+        this.auth
+          .requestAuthorized(
+            `/v1/agent-templates/${encodeURIComponent(templateId)}`,
+            { method: "GET" },
+            decodeAgentTemplateDetail,
+          )
+          .pipe(toAgentTemplateFailure),
+      );
+      if (Result.isSuccess(local)) return { detail: local.success, source: "account" };
+      // Public links belong to OpenBot. A self-hosted account service cannot read them.
+      return { detail: yield* this.readPublicTemplate(templateId), source: "public" };
+    });
+  }
+
+  private resolveTemplateUrls({ detail, source }: LoadedAgentTemplate): AgentTemplateDetail {
+    const skills = detail.skills.filter((skill) => skill.kind !== "embedded" || !MANAGED_SKILL_SLUGS.has(skill.slug));
+    if (!detail.avatarUrl) return { ...detail, skills, avatarUrl: null };
+    const avatarUrl =
+      source === "account"
+        ? accountAvatarUrl(this.auth, detail.avatarUrl)
+        : publicAvatarUrl(detail.avatarUrl, detail.id);
+    return { ...detail, skills, avatarUrl };
+  }
+
+  private readPublicTemplate(templateId: string): Effect.Effect<AgentTemplateDetail, AgentTemplateFailure> {
+    return Effect.gen({ self: this }, function* () {
+      const url = new URL(`/v1/agent-templates/${encodeURIComponent(templateId)}`, OPENBOT_AGENT_TEMPLATE_ORIGIN);
+      const response = yield* Effect.tryPromise({
+        try: (signal) =>
+          this.publicFetch(url, {
+            headers: { accept: "application/json" },
+            credentials: "omit",
+            cache: "no-store",
+            redirect: "error",
+            signal: AbortSignal.any([signal, AbortSignal.timeout(30_000)]),
+          }),
+        catch: () => unreadableTemplate(),
+      });
+      if (!response.ok) return yield* unreadableTemplate();
+      const value = yield* Effect.tryPromise({ try: () => response.json(), catch: () => unreadableTemplate() });
+      const detail = yield* Effect.try({
+        try: () => decodeAgentTemplateDetail(value),
+        catch: () => unreadableTemplate(),
+      });
+      if (detail.id !== templateId) return yield* unreadableTemplate();
+      return detail;
+    });
+  }
+
+  private downloadPublicAvatar(urlValue: string): Effect.Effect<Uint8Array, AgentTemplateFailure> {
+    return Effect.gen({ self: this }, function* () {
+      let url: URL;
+      try {
+        url = new URL(urlValue);
+      } catch {
+        return yield* unreadableTemplate();
+      }
+      if (url.origin !== OPENBOT_AGENT_TEMPLATE_ORIGIN) return yield* unreadableTemplate();
+      const response = yield* Effect.tryPromise({
+        try: (signal) =>
+          this.publicFetch(url, {
+            credentials: "omit",
+            cache: "no-store",
+            redirect: "error",
+            signal: AbortSignal.any([signal, AbortSignal.timeout(30_000)]),
+          }),
+        catch: () => unreadableTemplate(),
+      });
+      if (!response.ok) return yield* unreadableTemplate();
+      const contentLength = Number(response.headers.get("Content-Length"));
+      if (Number.isFinite(contentLength) && contentLength > AVATAR_IMAGE_LIMITS.sourceBytes)
+        return yield* unreadableTemplate();
+      return yield* Effect.tryPromise({
+        try: () => readLimitedResponse(response, AVATAR_IMAGE_LIMITS.sourceBytes),
+        catch: () => unreadableTemplate(),
+      });
     });
   }
 
@@ -451,3 +542,66 @@ export class AgentTemplateFailure extends Schema.TaggedError<AgentTemplateFailur
 }) {}
 
 const { io: templateIO, sync: templateSync, rewrap: toAgentTemplateFailure } = causeHelpers(AgentTemplateFailure);
+
+function publicAvatarUrl(value: string, templateId: string): string {
+  let url: URL;
+  try {
+    url = new URL(value, OPENBOT_AGENT_TEMPLATE_ORIGIN);
+  } catch {
+    throw new Error(sourceText("error.marketplace.templateUnreadable"));
+  }
+  if (
+    url.origin !== OPENBOT_AGENT_TEMPLATE_ORIGIN ||
+    url.username !== "" ||
+    url.password !== "" ||
+    url.pathname !== `/v1/agent-templates/${encodeURIComponent(templateId)}/avatar` ||
+    url.hash !== "" ||
+    (url.search !== "" && (url.searchParams.size !== 1 || !/^\d+$/u.test(url.searchParams.get("v") ?? "")))
+  )
+    throw new Error(sourceText("error.marketplace.templateUnreadable"));
+  return url.toString();
+}
+
+function accountAvatarUrl(auth: AgentTemplateAuth, value: string): string {
+  const api = new URL(auth.resolveApiUrl("/"));
+  const url = new URL(auth.resolveApiUrl(value));
+  if (url.origin !== api.origin || url.username !== "" || url.password !== "" || url.protocol !== api.protocol)
+    throw new Error(sourceText("error.marketplace.templateUnreadable"));
+  return url.toString();
+}
+
+function unreadableTemplate(): AgentTemplateFailure {
+  return new AgentTemplateFailure({ cause: new Error(sourceText("error.marketplace.templateUnreadable")) });
+}
+
+async function readLimitedResponse(response: Response, limit: number): Promise<Uint8Array> {
+  const reader = response.body?.getReader();
+  if (!reader) {
+    const bytes = new Uint8Array(await response.arrayBuffer());
+    if (bytes.byteLength > limit) throw new Error("Response is too large.");
+    return bytes;
+  }
+  const chunks: Uint8Array[] = [];
+  let size = 0;
+  try {
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      size += value.byteLength;
+      if (size > limit) {
+        await reader.cancel();
+        throw new Error("Response is too large.");
+      }
+      chunks.push(value);
+    }
+  } finally {
+    reader.releaseLock();
+  }
+  const bytes = new Uint8Array(size);
+  let offset = 0;
+  for (const chunk of chunks) {
+    bytes.set(chunk, offset);
+    offset += chunk.byteLength;
+  }
+  return bytes;
+}
